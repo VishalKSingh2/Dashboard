@@ -97,6 +97,7 @@ export default function DashboardPage() {
           filters={filters}
           onFiltersChange={setFilters}
           onApply={handleApply}
+          data = {data || undefined}
         />
 
         {data && (

@@ -1,21 +1,24 @@
 'use client';
 
-import { DashboardFilters } from '@/lib/types';
+import { DashboardData, DashboardFilters } from '@/lib/types';
 import Select from '@/components/ui/Select';
 import DatePicker from '@/components/ui/DatePicker';
 import Button from '@/components/ui/Button';
+import DownloadButton from '@/components/ui/DownloadButton';
 import { getCustomerTypes, getMediaTypes } from '@/lib/mockData';
 
 interface DashboardHeaderProps {
   filters: DashboardFilters;
   onFiltersChange: (filters: DashboardFilters) => void;
   onApply: () => void;
+  data? :DashboardData;
 }
 
 export default function DashboardHeader({
   filters,
   onFiltersChange,
   onApply,
+  data,
 }: DashboardHeaderProps) {
   const customerTypes = getCustomerTypes();
   const mediaTypes = getMediaTypes();
@@ -85,6 +88,9 @@ export default function DashboardHeader({
         <Button onClick={onApply} variant="primary">
           Apply
         </Button>
+        {data && (
+          <DownloadButton data={data} filters={filters}/>
+        )}
       </div>
     </div>
   );
