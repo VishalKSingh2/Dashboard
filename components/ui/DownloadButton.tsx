@@ -34,9 +34,9 @@ export default function DownloadButton({ data, filters, disabled }: DownloadButt
 
     try {
       if (format === 'excel') {
-        exportToExcel(data, filters);
+        await exportToExcel(data, filters);
       } else {
-        exportToCSV(data, filters);
+        await exportToCSV(data, filters);
       }
       
       // Show success notification (you can enhance this with a toast library)
