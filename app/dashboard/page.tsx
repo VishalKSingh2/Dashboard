@@ -40,7 +40,7 @@ export default function DashboardPage() {
         endDate: filters.endDate,
       });
 
-      const response = await fetch(`/api/dashboard?${params}`);
+      const response = await fetch(`/api/dashboard-db?${params}`);
       
       if (!response.ok) {
         throw new Error('Failed to fetch dashboard data');

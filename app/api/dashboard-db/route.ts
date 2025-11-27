@@ -6,14 +6,16 @@ import { format, subDays } from 'date-fns';
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
-    const now = new Date();
-    const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    // Use a date range that has actual data (latest data is June 2025)
+    const latestDate = new Date('2025-06-27');
+    const defaultStart = new Date(latestDate);
+    defaultStart.setDate(defaultStart.getDate() - 90); // Last 90 days
     
     const filters: DashboardFilters = {
       customerType: searchParams.get('customerType') || 'all',
       mediaType: searchParams.get('mediaType') || 'all',
-      startDate: searchParams.get('startDate') || format(firstDayOfMonth, 'yyyy-MM-dd'),
-      endDate: searchParams.get('endDate') || format(now, 'yyyy-MM-dd'),
+      startDate: searchParams.get('startDate') || format(defaultStart, 'yyyy-MM-dd'),
+      endDate: searchParams.get('endDate') || format(latestDate, 'yyyy-MM-dd'),
     };
 
     console.log('Dashboard DB API - Filters:', filters);
@@ -39,7 +41,7 @@ export async function GET(request: NextRequest) {
       SELECT 
         COUNT(DISTINCT vs.Id) as totalVideos,
         SUM(CAST(vs.LengthInMilliseconds AS BIGINT)) / 3600000.0 as totalHours,
-        COUNT(DISTINCT CASE WHEN vs.UploadSource = 'showreel' THEN vs.Id END) as totalShowreels,
+        COUNT(DISTINCT CASE WHEN RTRIM(vs.MediaSource) = 'Project' THEN vs.Id END) as totalShowreels,
         COUNT(DISTINCT us.Email) as activeUsers,
         AVG(CAST(vs.ViewCount AS FLOAT)) as avgViews
       FROM VideoStatistics vs
@@ -60,8 +62,8 @@ export async function GET(request: NextRequest) {
     const dailyDataQuery = `
       SELECT 
         CAST(vs.CreatedDate AS DATE) as date,
-        COUNT(CASE WHEN RTRIM(vs.UploadSource) != 'showreel' THEN 1 END) as video,
-        COUNT(CASE WHEN RTRIM(vs.UploadSource) = 'showreel' THEN 1 END) as showreel,
+        COUNT(CASE WHEN RTRIM(vs.MediaSource) != 'Project' THEN 1 END) as video,
+        COUNT(CASE WHEN RTRIM(vs.MediaSource) = 'Project' THEN 1 END) as showreel,
         SUM(CAST(vs.LengthInMilliseconds AS BIGINT)) / 3600000.0 as hours
       FROM VideoStatistics vs
       LEFT JOIN ClientOverview co ON RTRIM(vs.ClientId) = RTRIM(co.Id)
@@ -209,7 +211,7 @@ export async function GET(request: NextRequest) {
         user: row.userEmail || 'Unknown',
         role: row.role || 'User',
         uploads: row.uploads || 0,
-        lastActive: row.lastActive ? format(new Date(row.lastActive), 'yyyy-MM-dd') : format(now, 'yyyy-MM-dd'),
+        lastActive: row.lastActive ? format(new Date(row.lastActive), 'yyyy-MM-dd') : format(latestDate, 'yyyy-MM-dd'),
         totalViews: row.totalViews || 0,
       })),
     };
