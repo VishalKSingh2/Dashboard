@@ -43,9 +43,10 @@ export async function GET(request: NextRequest) {
     // Query 1: Get metrics
     const metricsQuery = `
       SELECT 
-        COUNT(DISTINCT CASE WHEN RTRIM(vs.MediaSource) != 'Project' THEN vs.Id END) as totalVideos,
+        COUNT(DISTINCT CASE WHEN RTRIM(vs.MediaSource) = 'Video' THEN vs.Id END) as totalVideos,
         SUM(CAST(vs.LengthInMilliseconds AS BIGINT)) / 3600000.0 as totalHours,
         COUNT(DISTINCT CASE WHEN RTRIM(vs.MediaSource) = 'Project' THEN vs.Id END) as totalShowreels,
+        COUNT(DISTINCT CASE WHEN RTRIM(vs.MediaSource) = 'Audio' THEN vs.Id END) as totalAudio,
         COUNT(DISTINCT us.Email) as activeUsers,
         AVG(CAST(vs.ViewCount AS FLOAT)) as avgViews
       FROM VideoStatistics vs
@@ -66,8 +67,9 @@ export async function GET(request: NextRequest) {
     const dailyDataQuery = `
       SELECT 
         CAST(vs.CreatedDate AS DATE) as date,
-        COUNT(CASE WHEN RTRIM(vs.MediaSource) != 'Project' THEN 1 END) as video,
+        COUNT(CASE WHEN RTRIM(vs.MediaSource) = 'Video' THEN 1 END) as video,
         COUNT(CASE WHEN RTRIM(vs.MediaSource) = 'Project' THEN 1 END) as showreel,
+        COUNT(CASE WHEN RTRIM(vs.MediaSource) = 'Audio' THEN 1 END) as audio,
         SUM(CAST(vs.LengthInMilliseconds AS BIGINT)) / 3600000.0 as hours
       FROM VideoStatistics vs
       LEFT JOIN ClientOverview co ON RTRIM(vs.ClientId) = RTRIM(co.Id)
@@ -177,6 +179,7 @@ export async function GET(request: NextRequest) {
     // Verify data consistency
     const dailyVideoSum = dailyData.reduce((sum: number, row: any) => sum + (row.video || 0), 0);
     const dailyShowreelSum = dailyData.reduce((sum: number, row: any) => sum + (row.showreel || 0), 0);
+    const dailyAudioSum = dailyData.reduce((sum: number, row: any) => sum + (row.audio || 0), 0);
     const dailyHoursSum = dailyData.reduce((sum: number, row: any) => sum + (row.hours || 0), 0);
     
     console.log('Data Consistency Check:', {
@@ -184,6 +187,8 @@ export async function GET(request: NextRequest) {
       dailyVideosSum: dailyVideoSum,
       metricsShowreels: currentMetrics.totalShowreels,
       dailyShowreelsSum: dailyShowreelSum,
+      metricsAudio: currentMetrics.totalAudio,
+      dailyAudioSum: dailyAudioSum,
       metricsHours: currentMetrics.totalHours,
       dailyHoursSum: Math.round(dailyHoursSum),
     });
@@ -203,6 +208,10 @@ export async function GET(request: NextRequest) {
           count: currentMetrics.totalShowreels || 0,
           changePercent: calculateChange(currentMetrics.totalShowreels || 0, previousMetrics.totalShowreels || 0),
         },
+        totalAudio: {
+          count: currentMetrics.totalAudio || 0,
+          changePercent: calculateChange(currentMetrics.totalAudio || 0, previousMetrics.totalAudio || 0),
+        },
         activeUsers: {
           count: currentMetrics.activeUsers || 0,
           status: 'stable',
@@ -216,6 +225,7 @@ export async function GET(request: NextRequest) {
         date: format(new Date(row.date), 'yyyy-MM-dd'),
         video: row.video || 0,
         showreel: row.showreel || 0,
+        audio: row.audio || 0,
       })),
       mediaHours: dailyData.map((row: any) => ({
         date: format(new Date(row.date), 'yyyy-MM-dd'),

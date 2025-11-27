@@ -17,9 +17,11 @@ import {
 interface MediaUploadsChartProps {
   data: MediaUploadData[];
   loading?: boolean;
+  startDate?: string;
+  endDate?: string;
 }
 
-export default function MediaUploadsChart({ data, loading }: MediaUploadsChartProps) {
+export default function MediaUploadsChart({ data, loading, startDate, endDate }: MediaUploadsChartProps) {
   if (loading) {
     return (
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
@@ -31,21 +33,77 @@ export default function MediaUploadsChart({ data, loading }: MediaUploadsChartPr
     );
   }
 
+  // Fill in missing dates with 0 uploads for complete date range
+  const fillMissingDates = (data: MediaUploadData[]): MediaUploadData[] => {
+    if (data.length === 0 && !startDate) return [];
+    
+    const filled: MediaUploadData[] = [];
+    const dataMap = new Map(data.map(d => [d.date, { video: d.video, showreel: d.showreel, audio: d.audio }]));
+    
+    // Use provided date range or fall back to data's date range
+    const start = startDate ? new Date(startDate) : new Date(data[0]?.date);
+    const end = endDate ? new Date(endDate) : new Date(data[data.length - 1]?.date);
+    
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      const dateStr = format(d, 'yyyy-MM-dd');
+      const existing = dataMap.get(dateStr);
+      filled.push({
+        date: dateStr,
+        video: existing?.video || 0,
+        showreel: existing?.showreel || 0,
+        audio: existing?.audio || 0,
+      });
+    }
+    
+    return filled;
+  };
+
+  const completeData = fillMissingDates(data);
+
   // Determine granularity for label formatting
-  const granularity = data.length > 0 && data.length < 365
-    ? getDisplayGranularity(data[0].date, data[data.length - 1].date)
+  const granularity = completeData.length > 0 && completeData.length < 365
+    ? getDisplayGranularity(completeData[0].date, completeData[completeData.length - 1].date)
     : 'daily';
 
   // Format data for display with readable labels
-  const chartData = data.map(item => ({
+  const chartData = completeData.map(item => ({
     ...item,
     displayDate: formatDateLabel(item.date, granularity),
     fullDate: format(new Date(item.date), 'dd-MM-yyyy'),
   }));
 
   // Calculate dynamic Y-axis domain
-  const maxValue = Math.max(...data.map(d => Math.max(d.video, d.showreel)));
-  const yAxisMax = Math.ceil(maxValue * 1.2 / 100) * 100;
+  const maxValue = Math.max(...completeData.map(d => Math.max(d.video, d.showreel, d.audio || 0)), 1);
+  
+  // Determine appropriate scale
+  let yAxisMax: number;
+  let tickInterval: number;
+  
+  if (maxValue <= 5) {
+    yAxisMax = 5;
+    tickInterval = 1;
+  } else if (maxValue <= 10) {
+    yAxisMax = 10;
+    tickInterval = 2;
+  } else if (maxValue <= 20) {
+    yAxisMax = 20;
+    tickInterval = 5;
+  } else if (maxValue <= 50) {
+    yAxisMax = 50;
+    tickInterval = 10;
+  } else if (maxValue <= 100) {
+    yAxisMax = 100;
+    tickInterval = 20;
+  } else {
+    yAxisMax = Math.ceil(maxValue * 1.2 / 100) * 100;
+    tickInterval = yAxisMax / 5;
+  }
+  
+  // Generate ticks
+  const yTicks = [];
+  for (let i = 0; i <= yAxisMax; i += tickInterval) {
+    yTicks.push(i);
+  }
 
   return (
     <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
@@ -60,12 +118,13 @@ export default function MediaUploadsChart({ data, loading }: MediaUploadsChartPr
             angle={-45}
             textAnchor="end"
             height={60}
-            interval={data.length <= 15 ? 0 : data.length <= 30 ? 1 : Math.floor(data.length / 12)}
+            interval={completeData.length <= 15 ? 0 : completeData.length <= 30 ? 1 : Math.floor(completeData.length / 12)}
           />
           <YAxis
             tick={{ fill: '#6b7280', fontSize: 12 }}
             tickLine={{ stroke: '#e5e7eb' }}
             domain={[0, yAxisMax]}
+            ticks={yTicks}
           />
           <Tooltip
             contentStyle={{
@@ -80,6 +139,13 @@ export default function MediaUploadsChart({ data, loading }: MediaUploadsChartPr
               }
               return value;
             }}
+            formatter={(value: number, name: string) => {
+              // Only show if value is greater than 0
+              if (value > 0) {
+                return [value, name];
+              }
+              return null;
+            }}
           />
           <Legend
             wrapperStyle={{ paddingTop: '20px' }}
@@ -91,7 +157,7 @@ export default function MediaUploadsChart({ data, loading }: MediaUploadsChartPr
             stroke="#3b82f6"
             strokeWidth={2}
             name="Video"
-            dot={data.length <= 30 ? { fill: '#3b82f6', r: 4 } : false}
+            dot={completeData.length <= 30 ? { fill: '#3b82f6', r: 4 } : false}
             activeDot={{ r: 6 }}
           />
           <Line
@@ -100,7 +166,16 @@ export default function MediaUploadsChart({ data, loading }: MediaUploadsChartPr
             stroke="#8b5cf6"
             strokeWidth={2}
             name="Showreel"
-            dot={data.length <= 30 ? { fill: '#8b5cf6', r: 4 } : false}
+            dot={completeData.length <= 30 ? { fill: '#8b5cf6', r: 4 } : false}
+            activeDot={{ r: 6 }}
+          />
+          <Line
+            type="monotone"
+            dataKey="audio"
+            stroke="#f59e0b"
+            strokeWidth={2}
+            name="Audio"
+            dot={completeData.length <= 30 ? { fill: '#f59e0b', r: 4 } : false}
             activeDot={{ r: 6 }}
           />
         </LineChart>
