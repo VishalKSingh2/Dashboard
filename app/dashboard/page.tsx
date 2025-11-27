@@ -56,12 +56,39 @@ export default function DashboardPage() {
   };
 
   useEffect(() => {
-    setFilters(getDefaultFilters());
-  }, [searchParams]);
+    const newFilters = getDefaultFilters();
+    setFilters(newFilters);
+    
+    // Fetch data with the URL params on initial load and when URL changes
+    const fetchWithParams = async () => {
+      setLoading(true);
+      setError(null);
 
-  useEffect(() => {
-    fetchData();
-  }, [filters]);
+      try {
+        const params = new URLSearchParams({
+          customerType: newFilters.customerType,
+          mediaType: newFilters.mediaType,
+          startDate: newFilters.startDate,
+          endDate: newFilters.endDate,
+        });
+
+        const response = await fetch(`/api/dashboard-db?${params}`);
+        
+        if (!response.ok) {
+          throw new Error('Failed to fetch dashboard data');
+        }
+
+        const result = await response.json();
+        setData(result);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'An error occurred');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchWithParams();
+  }, [searchParams]);
 
   const handleApply = () => {
     const params = new URLSearchParams({
