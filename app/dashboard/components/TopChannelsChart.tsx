@@ -19,6 +19,36 @@ interface TopChannelsChartProps {
 export default function TopChannelsChart({ data, loading }: TopChannelsChartProps) {
   const sortedData = [...data].sort((a, b) => b.hours - a.hours);
 
+  // Calculate dynamic domain based on highest value
+  const maxHours = Math.max(...data.map(d => d.hours), 0);
+  
+  // Determine scale based on max value
+  let maxDomain: number;
+  let tickInterval: number;
+  
+  if (maxHours <= 0.1) {
+    maxDomain = 0.1;
+    tickInterval = 0.02;
+  } else if (maxHours <= 1) {
+    maxDomain = 1;
+    tickInterval = 0.1;
+  } else if (maxHours <= 10) {
+    maxDomain = 10;
+    tickInterval = 1;
+  } else if (maxHours <= 100) {
+    maxDomain = Math.ceil(maxHours / 10) * 10;
+    tickInterval = maxDomain / 10;
+  } else {
+    maxDomain = Math.ceil(maxHours / 100) * 100;
+    tickInterval = maxDomain / 10;
+  }
+  
+  // Generate ticks
+  const ticks = [];
+  for (let i = 0; i <= maxDomain; i += tickInterval) {
+    ticks.push(Math.round(i * 100) / 100);
+  }
+
   if (loading) {
     return (
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
@@ -40,7 +70,8 @@ export default function TopChannelsChart({ data, loading }: TopChannelsChartProp
             type="number"
             tick={{ fill: '#6b7280', fontSize: 12 }}
             tickLine={{ stroke: '#e5e7eb' }}
-            domain={[0, 1200]}
+            domain={[0, maxDomain]}
+            ticks={ticks}
           />
           <YAxis
             type="category"

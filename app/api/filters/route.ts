@@ -35,9 +35,16 @@ export async function GET(request: NextRequest) {
 
     const mediaTypes = await query<{ MediaSource: string }>(mediaTypesQuery);
 
+    // Map database values to UI-friendly names
+    const mappedMediaTypes = mediaTypes.map(m => {
+      const source = m.MediaSource;
+      // Convert 'Project' to 'Showreel' for UI consistency
+      return source === 'Project' ? 'Showreel' : source;
+    });
+
     return NextResponse.json({
       customers: ['all', ...customers.map(c => c.Name)],
-      mediaTypes: ['all', ...mediaTypes.map(m => m.MediaSource)],
+      mediaTypes: ['all', ...mappedMediaTypes],
     });
 
   } catch (error) {

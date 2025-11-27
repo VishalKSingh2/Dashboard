@@ -42,9 +42,27 @@ export default function MediaHoursChart({ data, loading }: MediaHoursChartProps)
     fullDate: format(new Date(item.date), 'dd-MM-yyyy'),
   }));
 
-  // Calculate dynamic Y-axis domain
-  const maxValue = Math.max(...data.map(d => d.hours));
-  const yAxisMax = Math.ceil(maxValue * 1.2 / 100) * 100;
+  // Calculate dynamic Y-axis domain based on actual data
+  const maxValue = Math.max(...data.map(d => d.hours), 0.1);
+  
+  // Determine appropriate scale based on max value
+  let yAxisMax: number;
+  let yAxisTicks: number[];
+  
+  if (maxValue <= 1) {
+    yAxisMax = 1;
+    yAxisTicks = [0, 0.2, 0.4, 0.6, 0.8, 1.0];
+  } else if (maxValue <= 5) {
+    yAxisMax = 5;
+    yAxisTicks = [0, 1, 2, 3, 4, 5];
+  } else if (maxValue <= 10) {
+    yAxisMax = 10;
+    yAxisTicks = [0, 2, 4, 6, 8, 10];
+  } else {
+    yAxisMax = Math.ceil(maxValue * 1.2 / 10) * 10;
+    const step = yAxisMax / 5;
+    yAxisTicks = Array.from({ length: 6 }, (_, i) => i * step);
+  }
 
   return (
     <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
@@ -65,6 +83,8 @@ export default function MediaHoursChart({ data, loading }: MediaHoursChartProps)
             tick={{ fill: '#6b7280', fontSize: 12 }}
             tickLine={{ stroke: '#e5e7eb' }}
             domain={[0, yAxisMax]}
+            ticks={yAxisTicks}
+            tickFormatter={(value) => value.toFixed(1)}
           />
           <Tooltip
             contentStyle={{
@@ -79,6 +99,10 @@ export default function MediaHoursChart({ data, loading }: MediaHoursChartProps)
                 return payload[0].payload.fullDate;
               }
               return value;
+            }}
+            formatter={(value: any) => {
+              const numValue = Number(value);
+              return [numValue.toFixed(2) + ' hrs', 'Hours'];
             }}
           />
           <Bar

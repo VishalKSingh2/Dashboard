@@ -20,6 +20,10 @@ export async function GET(request: NextRequest) {
 
     console.log('Dashboard DB API - Filters:', filters);
 
+    // Map UI filter values to database values
+    // 'Showreel' in UI maps to 'Project' in database
+    const dbMediaType = filters.mediaType === 'Showreel' ? 'Project' : filters.mediaType;
+
     // Build WHERE clauses based on filters
     const whereConditions: string[] = [
       `CAST(vs.CreatedDate AS DATE) >= @startDate`,
@@ -30,7 +34,7 @@ export async function GET(request: NextRequest) {
       whereConditions.push(`RTRIM(c.Name) = @customerType`);
     }
 
-    if (filters.mediaType !== 'all') {
+    if (dbMediaType !== 'all') {
       whereConditions.push(`RTRIM(vs.MediaSource) = @mediaType`);
     }
 
@@ -39,7 +43,7 @@ export async function GET(request: NextRequest) {
     // Query 1: Get metrics
     const metricsQuery = `
       SELECT 
-        COUNT(DISTINCT vs.Id) as totalVideos,
+        COUNT(DISTINCT CASE WHEN RTRIM(vs.MediaSource) != 'Project' THEN vs.Id END) as totalVideos,
         SUM(CAST(vs.LengthInMilliseconds AS BIGINT)) / 3600000.0 as totalHours,
         COUNT(DISTINCT CASE WHEN RTRIM(vs.MediaSource) = 'Project' THEN vs.Id END) as totalShowreels,
         COUNT(DISTINCT us.Email) as activeUsers,
@@ -55,7 +59,7 @@ export async function GET(request: NextRequest) {
       startDate: filters.startDate,
       endDate: filters.endDate,
       customerType: filters.customerType,
-      mediaType: filters.mediaType,
+      mediaType: dbMediaType,
     });
 
     // Query 2: Get daily upload data
@@ -77,7 +81,7 @@ export async function GET(request: NextRequest) {
       startDate: filters.startDate,
       endDate: filters.endDate,
       customerType: filters.customerType,
-      mediaType: filters.mediaType,
+      mediaType: dbMediaType,
     });
 
     // Query 3: Get top clients (channels)
@@ -97,7 +101,7 @@ export async function GET(request: NextRequest) {
       startDate: filters.startDate,
       endDate: filters.endDate,
       customerType: filters.customerType,
-      mediaType: filters.mediaType,
+      mediaType: dbMediaType,
     });
 
     // Query 4: Get media types breakdown
@@ -117,7 +121,7 @@ export async function GET(request: NextRequest) {
       startDate: filters.startDate,
       endDate: filters.endDate,
       customerType: filters.customerType,
-      mediaType: filters.mediaType,
+      mediaType: dbMediaType,
     });
 
     // Query 5: Get active users (simplified since ClientUser table may not exist)
@@ -152,7 +156,7 @@ export async function GET(request: NextRequest) {
       prevStartDate,
       prevEndDate,
       customerType: filters.customerType,
-      mediaType: filters.mediaType,
+      mediaType: dbMediaType,
     });
 
     // Calculate changes
@@ -160,24 +164,44 @@ export async function GET(request: NextRequest) {
     const previousMetrics = prevMetrics[0] || { totalVideos: 0, totalHours: 0, totalShowreels: 0, activeUsers: 0, avgViews: 0 };
 
     const calculateChange = (current: number, previous: number) => {
-      if (previous === 0) return 0;
+      // If no previous data but we have current data, show as 100% increase
+      if (previous === 0 && current > 0) return 100;
+      // If no data in either period
+      if (previous === 0 && current === 0) return 0;
+      // If we had data before but none now
+      if (previous > 0 && current === 0) return -100;
+      // Normal calculation
       return Math.round(((current - previous) / previous) * 100);
     };
+
+    // Verify data consistency
+    const dailyVideoSum = dailyData.reduce((sum: number, row: any) => sum + (row.video || 0), 0);
+    const dailyShowreelSum = dailyData.reduce((sum: number, row: any) => sum + (row.showreel || 0), 0);
+    const dailyHoursSum = dailyData.reduce((sum: number, row: any) => sum + (row.hours || 0), 0);
+    
+    console.log('Data Consistency Check:', {
+      metricsVideos: currentMetrics.totalVideos,
+      dailyVideosSum: dailyVideoSum,
+      metricsShowreels: currentMetrics.totalShowreels,
+      dailyShowreelsSum: dailyShowreelSum,
+      metricsHours: currentMetrics.totalHours,
+      dailyHoursSum: Math.round(dailyHoursSum),
+    });
 
     // Format response
     const response: DashboardData = {
       metrics: {
         totalVideos: {
           count: currentMetrics.totalVideos || 0,
-          changePercent: calculateChange(currentMetrics.totalVideos, previousMetrics.totalVideos),
+          changePercent: calculateChange(currentMetrics.totalVideos || 0, previousMetrics.totalVideos || 0),
         },
         totalHours: {
-          hours: Math.round(currentMetrics.totalHours || 0),
-          changePercent: calculateChange(currentMetrics.totalHours, previousMetrics.totalHours),
+          hours: Math.round((currentMetrics.totalHours || 0) * 100) / 100,
+          changePercent: calculateChange(currentMetrics.totalHours || 0, previousMetrics.totalHours || 0),
         },
         totalShowreels: {
           count: currentMetrics.totalShowreels || 0,
-          changePercent: calculateChange(currentMetrics.totalShowreels, previousMetrics.totalShowreels),
+          changePercent: calculateChange(currentMetrics.totalShowreels || 0, previousMetrics.totalShowreels || 0),
         },
         activeUsers: {
           count: currentMetrics.activeUsers || 0,
@@ -195,16 +219,23 @@ export async function GET(request: NextRequest) {
       })),
       mediaHours: dailyData.map((row: any) => ({
         date: format(new Date(row.date), 'yyyy-MM-dd'),
-        hours: Math.round((row.hours || 0) * 10) / 10,
+        hours: Math.round((row.hours || 0) * 100) / 100, // Round to 2 decimal places instead of 1
       })),
-      mediaTypes: mediaTypes.map((row: any, index: number) => ({
-        name: row.name || 'Unknown',
-        value: row.value || 0,
-        color: ['#3b82f6', '#f59e0b', '#8b5cf6', '#ec4899'][index % 4],
-      })),
+      mediaTypes: mediaTypes.map((row: any, index: number) => {
+        // Map database 'Project' to UI-friendly 'Showreel'
+        let displayName = row.name || 'Unknown';
+        if (displayName === 'Project') {
+          displayName = 'Showreel';
+        }
+        return {
+          name: displayName,
+          value: row.value || 0,
+          color: ['#3b82f6', '#f59e0b', '#8b5cf6', '#ec4899'][index % 4],
+        };
+      }),
       topChannels: topChannels.map((row: any) => ({
         name: row.name || 'Unknown',
-        hours: Math.round((row.hours || 0) * 10) / 10,
+        hours: Math.round((row.hours || 0) * 100) / 100,
       })),
       activeUsers: activeUsers.map((row: any, index: number) => ({
         id: `user-${index + 1}`,
