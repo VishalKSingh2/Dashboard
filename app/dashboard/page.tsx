@@ -23,6 +23,9 @@ export default function DashboardPage() {
   });
 
   const [filters, setFilters] = useState<DashboardFilters>(getDefaultFilters());
+  
+  // Applied filters from URL (used for data fetching and chart rendering)
+  const appliedFilters = getDefaultFilters();
 
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -40,7 +43,7 @@ export default function DashboardPage() {
         endDate: filters.endDate,
       });
 
-      const response = await fetch(`/api/dashboard?${params}`);
+      const response = await fetch(`/api/dashboard-db?${params}`);
       
       if (!response.ok) {
         throw new Error('Failed to fetch dashboard data');
@@ -56,12 +59,39 @@ export default function DashboardPage() {
   };
 
   useEffect(() => {
-    setFilters(getDefaultFilters());
-  }, [searchParams]);
+    const newFilters = getDefaultFilters();
+    setFilters(newFilters);
+    
+    // Fetch data with the URL params on initial load and when URL changes
+    const fetchWithParams = async () => {
+      setLoading(true);
+      setError(null);
 
-  useEffect(() => {
-    fetchData();
-  }, [filters]);
+      try {
+        const params = new URLSearchParams({
+          customerType: newFilters.customerType,
+          mediaType: newFilters.mediaType,
+          startDate: newFilters.startDate,
+          endDate: newFilters.endDate,
+        });
+
+        const response = await fetch(`/api/dashboard-db?${params}`);
+        
+        if (!response.ok) {
+          throw new Error('Failed to fetch dashboard data');
+        }
+
+        const result = await response.json();
+        setData(result);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'An error occurred');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchWithParams();
+  }, [searchParams]);
 
   const handleApply = () => {
     const params = new URLSearchParams({
@@ -105,8 +135,8 @@ export default function DashboardPage() {
             <MetricsGrid metrics={data.metrics} loading={loading} />
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-              <MediaUploadsChart data={data.mediaUploads} loading={loading} />
-              <MediaHoursChart data={data.mediaHours} loading={loading} />
+              <MediaUploadsChart key={`uploads-${appliedFilters.startDate}-${appliedFilters.endDate}`} data={data.mediaUploads} loading={loading} startDate={appliedFilters.startDate} endDate={appliedFilters.endDate} />
+              <MediaHoursChart key={`hours-${appliedFilters.startDate}-${appliedFilters.endDate}`} data={data.mediaHours} loading={loading} startDate={appliedFilters.startDate} endDate={appliedFilters.endDate} />
               <MediaTypeChart data={data.mediaTypes} loading={loading} />
               <TopChannelsChart data={data.topChannels} loading={loading} />
             </div>

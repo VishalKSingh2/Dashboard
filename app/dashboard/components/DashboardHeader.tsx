@@ -1,11 +1,13 @@
 'use client';
 
+import { useState, useEffect } from 'react';
 import { DashboardData, DashboardFilters } from '@/lib/types';
 import Select from '@/components/ui/Select';
+import SearchableSelect from '@/components/ui/SearchableSelect';
 import DatePicker from '@/components/ui/DatePicker';
 import Button from '@/components/ui/Button';
 import DownloadButton from '@/components/ui/DownloadButton';
-import { getCustomerTypes, getMediaTypes } from '@/lib/mockData';
+import AdvancedDownloadButton from '@/components/ui/AdvancedDownloadButton';
 
 interface DashboardHeaderProps {
   filters: DashboardFilters;
@@ -20,8 +22,28 @@ export default function DashboardHeader({
   onApply,
   data,
 }: DashboardHeaderProps) {
-  const customerTypes = getCustomerTypes();
-  const mediaTypes = getMediaTypes();
+  const [customerTypes, setCustomerTypes] = useState<string[]>(['all']);
+  const [mediaTypes, setMediaTypes] = useState<string[]>(['all']);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchFilters = async () => {
+      try {
+        const response = await fetch('/api/filters');
+        if (response.ok) {
+          const data = await response.json();
+          setCustomerTypes(data.customers || ['all']);
+          setMediaTypes(data.mediaTypes || ['all']);
+        }
+      } catch (error) {
+        console.error('Error fetching filters:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchFilters();
+  }, []);
 
   const handleFilterChange = (key: keyof DashboardFilters, value: string) => {
     const updatedFilters = {
@@ -53,12 +75,14 @@ export default function DashboardHeader({
       </div>
 
       <div className="flex flex-wrap gap-4 items-end">
-        <Select
+        <SearchableSelect
           label="Customers"
           options={customerTypes}
           value={filters.customerType}
           onChange={(e) => handleFilterChange('customerType', e.target.value)}
-          className="min-w-[180px]"
+          className="min-w-[220px]"
+          maxVisible={5}
+          placeholder="Search customers..."
         />
 
         <Select
@@ -89,7 +113,10 @@ export default function DashboardHeader({
           Apply
         </Button>
         {data && (
-          <DownloadButton data={data} filters={filters}/>
+          <>
+            <DownloadButton data={data} filters={filters}/>
+            <AdvancedDownloadButton filters={filters}/>
+          </>
         )}
       </div>
     </div>

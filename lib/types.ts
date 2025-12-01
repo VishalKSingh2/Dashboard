@@ -11,6 +11,10 @@ export interface DashboardMetrics {
     count: number;
     changePercent: number;
   };
+  totalAudio: {
+    count: number;
+    changePercent: number;
+  };
   activeUsers: {
     count: number;
     status: 'stable' | 'increase' | 'decrease';
@@ -25,6 +29,7 @@ export interface MediaUploadData {
   date: string; // ISO date string (YYYY-MM-DD)
   video: number;
   showreel: number;
+  audio: number;
 }
 
 export interface MediaHoursData {
