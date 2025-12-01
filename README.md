@@ -42,13 +42,19 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 app/
 ├── dashboard/          # Dashboard page and components
 ├── api/               # API routes
+│   ├── dashboard-db/  # Database API endpoint
+│   ├── filters/       # Filter options endpoint
+│   └── advanced-report/ # Advanced reporting endpoint
 ├── layout.tsx         # Root layout
 └── page.tsx           # Home page
 
 lib/
 ├── types.ts           # TypeScript interfaces
 ├── utils.ts           # Utility functions
-└── mockData.ts        # Mock data generator
+├── db.ts              # Database connection
+├── dataAggregation.ts # Data aggregation utilities
+├── dateUtils.ts       # Date utilities
+└── exportUtils.ts     # Export utilities
 
 components/
 └── ui/                # Reusable UI components
