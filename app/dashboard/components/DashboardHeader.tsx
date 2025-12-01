@@ -7,6 +7,7 @@ import SearchableSelect from '@/components/ui/SearchableSelect';
 import DatePicker from '@/components/ui/DatePicker';
 import Button from '@/components/ui/Button';
 import DownloadButton from '@/components/ui/DownloadButton';
+import AdvancedDownloadButton from '@/components/ui/AdvancedDownloadButton';
 
 interface DashboardHeaderProps {
   filters: DashboardFilters;
@@ -112,7 +113,10 @@ export default function DashboardHeader({
           Apply
         </Button>
         {data && (
-          <DownloadButton data={data} filters={filters}/>
+          <>
+            <DownloadButton data={data} filters={filters}/>
+            <AdvancedDownloadButton filters={filters}/>
+          </>
         )}
       </div>
     </div>
