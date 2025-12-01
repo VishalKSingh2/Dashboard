@@ -3,6 +3,7 @@ import sql from 'mssql';
 // SQL Server configuration
 const config: sql.config = {
   server: process.env.DB_SERVER || '',
+  port: parseInt(process.env.DB_PORT || '1433'),
   database: process.env.DB_DATABASE || '',
   user: process.env.DB_USER || '',
   password: process.env.DB_PASSWORD || '',
@@ -10,6 +11,7 @@ const config: sql.config = {
     encrypt: true, // Use encryption
     trustServerCertificate: true, // For local dev
     enableArithAbort: true,
+    connectTimeout: 30000,
   },
   pool: {
     max: 10,
@@ -25,8 +27,20 @@ let pool: sql.ConnectionPool | null = null;
  * Get database connection pool
  */
 export async function getPool(): Promise<sql.ConnectionPool> {
-  if (!pool) {
+  if (!pool || !pool.connected) {
+    // Close existing pool if it exists but is not connected
+    if (pool && !pool.connected) {
+      try {
+        await pool.close();
+      } catch (e) {
+        console.error('Error closing disconnected pool:', e);
+      }
+      pool = null;
+    }
+    
+    console.log('Creating new database connection pool...');
     pool = await sql.connect(config);
+    console.log('Database connected successfully');
   }
   return pool;
 }

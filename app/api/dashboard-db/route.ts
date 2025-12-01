@@ -40,28 +40,37 @@ export async function GET(request: NextRequest) {
 
     const whereClause = whereConditions.join(' AND ');
 
-    // Query 1: Get metrics
+    // Query 1: Get metrics (Fixed: removed DISTINCT from COUNT to match SUM calculation)
     const metricsQuery = `
       SELECT 
-        COUNT(DISTINCT CASE WHEN RTRIM(vs.MediaSource) = 'Video' THEN vs.Id END) as totalVideos,
+        COUNT(CASE WHEN RTRIM(vs.MediaSource) = 'Video' THEN vs.Id END) as totalVideos,
         SUM(CAST(vs.LengthInMilliseconds AS BIGINT)) / 3600000.0 as totalHours,
-        COUNT(DISTINCT CASE WHEN RTRIM(vs.MediaSource) = 'Project' THEN vs.Id END) as totalShowreels,
-        COUNT(DISTINCT CASE WHEN RTRIM(vs.MediaSource) = 'Audio' THEN vs.Id END) as totalAudio,
-        COUNT(DISTINCT us.Email) as activeUsers,
+        COUNT(CASE WHEN RTRIM(vs.MediaSource) = 'Project' THEN vs.Id END) as totalShowreels,
+        COUNT(CASE WHEN RTRIM(vs.MediaSource) = 'Audio' THEN vs.Id END) as totalAudio,
         AVG(CAST(vs.ViewCount AS FLOAT)) as avgViews
       FROM VideoStatistics vs
       LEFT JOIN ClientOverview co ON RTRIM(vs.ClientId) = RTRIM(co.Id)
       LEFT JOIN Customer c ON RTRIM(co.CustomerId) = RTRIM(c.Id)
-      LEFT JOIN UserStatistics us ON us.LastLogin >= DATEADD(day, -30, GETDATE())
       WHERE ${whereClause}
     `;
+    
+    // Separate query for active users (no JOIN affecting main metrics)
+    const activeUsersQuery = `
+      SELECT COUNT(DISTINCT Email) as activeUsers
+      FROM UserStatistics
+      WHERE LastLogin >= DATEADD(day, -30, GETDATE())
+        AND IsActive = 1
+    `;
 
-    const metrics = await query(metricsQuery, {
-      startDate: filters.startDate,
-      endDate: filters.endDate,
-      customerType: filters.customerType,
-      mediaType: dbMediaType,
-    });
+    const [metrics, activeUsersResult] = await Promise.all([
+      query(metricsQuery, {
+        startDate: filters.startDate,
+        endDate: filters.endDate,
+        customerType: filters.customerType,
+        mediaType: dbMediaType,
+      }),
+      query(activeUsersQuery, {})
+    ]);
 
     // Query 2: Get daily upload data
     const dailyDataQuery = `
@@ -162,8 +171,9 @@ export async function GET(request: NextRequest) {
     });
 
     // Calculate changes
-    const currentMetrics = metrics[0] || { totalVideos: 0, totalHours: 0, totalShowreels: 0, activeUsers: 0, avgViews: 0 };
-    const previousMetrics = prevMetrics[0] || { totalVideos: 0, totalHours: 0, totalShowreels: 0, activeUsers: 0, avgViews: 0 };
+    const currentMetrics = metrics[0] || { totalVideos: 0, totalHours: 0, totalShowreels: 0, totalAudio: 0, avgViews: 0 };
+    const previousMetrics = prevMetrics[0] || { totalVideos: 0, totalHours: 0, totalShowreels: 0, totalAudio: 0, avgViews: 0 };
+    const activeUsersCount = activeUsersResult[0]?.activeUsers || 0;
 
     const calculateChange = (current: number, previous: number) => {
       // If no previous data but we have current data, show as 100% increase
@@ -213,7 +223,7 @@ export async function GET(request: NextRequest) {
           changePercent: calculateChange(currentMetrics.totalAudio || 0, previousMetrics.totalAudio || 0),
         },
         activeUsers: {
-          count: currentMetrics.activeUsers || 0,
+          count: activeUsersCount,
           status: 'stable',
         },
         avgViewsPerMedia: {
