@@ -58,6 +58,14 @@ export default function AdvancedDownloadButton({ filters, disabled }: AdvancedDo
         return;
       }
 
+      // Show warnings if any
+      if (metadata.warnings && metadata.warnings.length > 0) {
+        const warningMsg = metadata.warnings.join('\n');
+        if (!confirm(`⚠️ Warning:\n\n${warningMsg}\n\nDo you want to continue with the export?`)) {
+          return;
+        }
+      }
+
       // Log data for debugging
       console.log('Advanced Report Data:', {
         videos: data.videos?.length || 0,

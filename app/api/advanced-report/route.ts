@@ -21,11 +21,20 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Add warning for large date ranges (more than 90 days)
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    const daysDiff = Math.floor((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
+    
+    if (daysDiff > 90) {
+      console.warn('Large date range requested:', daysDiff, 'days');
+    }
+
     // Execute all 4 queries in parallel
     const [videosData, transcriptionsData, showreelsData, redactionRequestsData] = await Promise.all([
-      // Query 1: Videos (Fixed to use VideoStatistics instead of SPLUNK_VideoStatistics)
+      // Query 1: Videos (Limited to prevent memory issues with large exports)
       query(`
-        SELECT 
+        SELECT TOP 100000
           DATEADD(MONTH, DATEDIFF(MONTH, 0, vs.CreatedDate), 0) AS [Month],
           vs.ClientId,
           c.Name AS ParentName,
@@ -53,7 +62,7 @@ export async function POST(request: NextRequest) {
         WHERE
           vs.CreatedDate >= @Start
           AND vs.CreatedDate < DATEADD(day, 1, @End)
-        ORDER BY vs.CreatedDate
+        ORDER BY vs.CreatedDate DESC
       `, { Start: startDate, End: endDate }),
 
       // Query 2: Transcriptions (Fixed to use TranscriptionRequestStatistics)
@@ -157,6 +166,12 @@ export async function POST(request: NextRequest) {
       redactionRequests: redactionRequestsData.length,
     });
 
+    // Check if any query hit the limit
+    const warnings = [];
+    if (videosData.length >= 100000) {
+      warnings.push('Videos limited to 100,000 records. Use a smaller date range for complete data.');
+    }
+
     // Return the data to be processed on client side
     return NextResponse.json({
       success: true,
@@ -176,6 +191,7 @@ export async function POST(request: NextRequest) {
           showreels: showreelsData.length,
           redactionRequests: redactionRequestsData.length,
         },
+        warnings: warnings.length > 0 ? warnings : undefined,
       },
     });
   } catch (error) {
