@@ -13,6 +13,7 @@ const config: sql.config = {
     enableArithAbort: true,
     connectTimeout: 30000,
   },
+  requestTimeout: 120000, // 120 seconds for large queries
   pool: {
     max: 10,
     min: 0,
@@ -50,11 +51,17 @@ export async function getPool(): Promise<sql.ConnectionPool> {
  */
 export async function query<T = any>(
   queryText: string,
-  params?: Record<string, any>
+  params?: Record<string, any>,
+  timeout?: number
 ): Promise<T[]> {
   try {
     const pool = await getPool();
     const request = pool.request();
+
+    // Set request timeout (default 15000ms, can be overridden for large queries)
+    if (timeout) {
+      (request as any).timeout = timeout;
+    }
 
     // Add parameters if provided
     if (params) {
