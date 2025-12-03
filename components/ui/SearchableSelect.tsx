@@ -5,7 +5,7 @@ import { ChevronDown, Check, Search, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface SearchableSelectProps {
-  options: string[];
+  options: string[] | Array<{id: string, name: string}>;
   label?: string;
   value?: string;
   onChange?: (e: { target: { value: string } }) => void;
@@ -24,10 +24,15 @@ export default function SearchableSelect({
   placeholder = 'Search...',
 }: SearchableSelectProps) {
   const [isOpen, setIsOpen] = useState(false);
-  const [selectedValue, setSelectedValue] = useState(value || options[0]);
+  const [selectedValue, setSelectedValue] = useState(value || (typeof options[0] === 'string' ? options[0] : options[0]?.id || 'all'));
   const [searchTerm, setSearchTerm] = useState('');
   const dropdownRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Normalize options to always work with objects
+  const normalizedOptions = options.map(opt => 
+    typeof opt === 'string' ? { id: opt, name: opt } : opt
+  );
 
   useEffect(() => {
     if (value) setSelectedValue(value);
@@ -51,22 +56,24 @@ export default function SearchableSelect({
     }
   }, [isOpen]);
 
-  const handleSelect = (option: string) => {
-    setSelectedValue(option);
+  const handleSelect = (optionId: string) => {
+    setSelectedValue(optionId);
     setIsOpen(false);
     setSearchTerm('');
     if (onChange) {
-      onChange({ target: { value: option } });
+      onChange({ target: { value: optionId } });
     }
   };
 
-  const getDisplayValue = (option: string) => {
-    return option === 'all' ? `All ${label || 'Options'}` : option;
+  const getDisplayValue = (optionId: string) => {
+    const option = normalizedOptions.find(opt => opt.id === optionId);
+    if (!option) return optionId;
+    return option.id === 'all' ? option.name : option.name;
   };
 
-  const filteredOptions = options.filter(option => {
-    if (option === 'all') return true;
-    return option.toLowerCase().includes(searchTerm.toLowerCase());
+  const filteredOptions = normalizedOptions.filter(option => {
+    if (option.id === 'all') return true;
+    return option.name.toLowerCase().includes(searchTerm.toLowerCase());
   });
 
   const displayedOptions = searchTerm 
@@ -138,21 +145,21 @@ export default function SearchableSelect({
               {displayedOptions.length > 0 ? (
                 displayedOptions.map((option, index) => (
                   <button
-                    key={option}
+                    key={option.id}
                     type="button"
-                    onClick={() => handleSelect(option)}
+                    onClick={() => handleSelect(option.id)}
                     className={cn(
                       'w-full px-4 py-2.5 text-left text-sm transition-all duration-150',
                       'flex items-center justify-between group',
                       'hover:bg-gradient-to-r hover:from-blue-50 hover:to-indigo-50 hover:pl-5',
-                      selectedValue === option
+                      selectedValue === option.id
                         ? 'bg-blue-50 text-blue-700 font-semibold border-l-4 border-blue-500 pl-3'
                         : 'text-gray-700 font-medium border-l-4 border-transparent',
                       index === 0 && 'border-b border-gray-100'
                     )}
                   >
-                    <span className="truncate">{getDisplayValue(option)}</span>
-                    {selectedValue === option && (
+                    <span className="truncate">{option.name}</span>
+                    {selectedValue === option.id && (
                       <Check className="h-4 w-4 text-blue-600 flex-shrink-0 ml-2" />
                     )}
                   </button>

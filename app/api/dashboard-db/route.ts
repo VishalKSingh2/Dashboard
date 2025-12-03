@@ -54,12 +54,23 @@ export async function GET(request: NextRequest) {
       WHERE ${whereClause}
     `;
     
-    // Separate query for active users (no JOIN affecting main metrics)
+    // Query for active users with optional customer filter
+    const activeUsersWhereConditions: string[] = [
+      'us.LastLogin >= DATEADD(day, -30, GETDATE())',
+      'us.IsActive = 1'
+    ];
+    
+    if (filters.customerType !== 'all') {
+      activeUsersWhereConditions.push('RTRIM(c.Id) = @customerId');
+    }
+    
     const activeUsersQuery = `
-      SELECT COUNT(DISTINCT Email) as activeUsers
-      FROM UserStatistics
-      WHERE LastLogin >= DATEADD(day, -30, GETDATE())
-        AND IsActive = 1
+      SELECT COUNT(DISTINCT us.Email) as activeUsers
+      FROM UserStatistics us
+      INNER JOIN ClientUserRoles cur ON us.Id = cur.UserId
+      INNER JOIN ClientOverview co ON cur.ClientId = co.Id
+      INNER JOIN Customer c ON co.CustomerId = c.Id
+      WHERE ${activeUsersWhereConditions.join(' AND ')}
     `;
 
     const [metrics, activeUsersResult] = await Promise.all([
@@ -69,7 +80,9 @@ export async function GET(request: NextRequest) {
         customerType: filters.customerType,
         mediaType: dbMediaType,
       }),
-      query(activeUsersQuery, {})
+      query(activeUsersQuery, {
+        customerId: filters.customerType,
+      })
     ]);
 
     // Query 2: Get daily upload data
@@ -135,22 +148,38 @@ export async function GET(request: NextRequest) {
       mediaType: dbMediaType,
     });
 
-    // Query 5: Get active users (simplified since ClientUser table may not exist)
+    // Query 5: Get active users with customer and client information
+    const usersWhereConditions: string[] = [
+      'us.LastLogin >= DATEADD(day, -30, GETDATE())',
+      'us.IsActive = 1'
+    ];
+    
+    if (filters.customerType !== 'all') {
+      usersWhereConditions.push(`RTRIM(c.Id) = @customerId`);
+    }
+    
+    const usersWhereClause = `WHERE ${usersWhereConditions.join(' AND ')}`;
+
     const usersQuery = `
       SELECT TOP 20
-        us.Email as userEmail,
-        COALESCE(us.CreationSource, 'User') as role,
-        0 as uploads,
-        us.LastLogin as lastActive,
-        0 as totalViews
-      FROM UserStatistics us
-      WHERE us.IsActive = 1
-      GROUP BY us.Email, us.CreationSource, us.LastLogin
+        us.Email,
+        c.Name as CustomerName,
+        co.Name as ClientName,
+        us.LastLogin,
+        CASE 
+          WHEN us.IsActive = 1 THEN 'Enabled'
+          WHEN us.IsActive = 0 THEN 'Disabled'
+        END as IsActive
+      FROM [dbo].[ClientUserRoles] cur
+      INNER JOIN [dbo].[ClientOverview] co ON cur.ClientId = co.Id
+      INNER JOIN [dbo].[Customer] c ON co.CustomerId = c.Id
+      INNER JOIN [dbo].[UserStatistics] us ON cur.UserId = us.Id
+      ${usersWhereClause}
       ORDER BY us.LastLogin DESC
     `;
 
     const activeUsers = await query(usersQuery, {
-      customerType: filters.customerType,
+      customerId: filters.customerType,
     });
 
     // Calculate previous period for comparison
@@ -259,11 +288,11 @@ export async function GET(request: NextRequest) {
       })),
       activeUsers: activeUsers.map((row: any, index: number) => ({
         id: `user-${index + 1}`,
-        user: row.userEmail || 'Unknown',
-        role: row.role || 'User',
-        uploads: row.uploads || 0,
-        lastActive: row.lastActive ? format(new Date(row.lastActive), 'yyyy-MM-dd') : format(latestDate, 'yyyy-MM-dd'),
-        totalViews: row.totalViews || 0,
+        email: row.Email || 'Unknown',
+        customerName: row.CustomerName || 'Unknown',
+        clientName: row.ClientName || 'Unknown',
+        lastLogin: row.LastLogin ? format(new Date(row.LastLogin), 'yyyy-MM-dd') : format(latestDate, 'yyyy-MM-dd'),
+        isActive: row.IsActive || 'Disabled',
       })),
     };
 

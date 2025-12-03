@@ -10,11 +10,11 @@ interface ActiveUsersTableProps {
     loading?: boolean;
 }
 
-type SortField = 'user' | 'uploads' | 'lastActive' | 'totalViews';
+type SortField = 'email' | 'customerName' | 'clientName' | 'lastLogin' | 'isActive';
 type SortDirection = 'asc' | 'desc';
 
 export default function ActiveUsersTable({ data, loading }: ActiveUsersTableProps) {
-    const [sortField, setSortField] = useState<SortField>('lastActive');
+    const [sortField, setSortField] = useState<SortField>('lastLogin');
     const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
     const [displayCount, setDisplayCount] = useState(10);
 
@@ -42,7 +42,7 @@ export default function ActiveUsersTable({ data, loading }: ActiveUsersTableProp
         let aValue: any = a[sortField];
         let bValue: any = b[sortField];
 
-        if (sortField === 'lastActive') {
+        if (sortField === 'lastLogin') {
             aValue = new Date(aValue).getTime();
             bValue = new Date(bValue).getTime();
         }
@@ -78,41 +78,47 @@ export default function ActiveUsersTable({ data, loading }: ActiveUsersTableProp
                         <tr className="bg-gray-50 border-b border-gray-200">
                             <th className="px-4 py-3 text-left">
                                 <button
-                                    onClick={() => handleSort('user')}
+                                    onClick={() => handleSort('email')}
                                     className="flex items-center gap-1 text-sm font-medium text-gray-700 hover:text-blue-600"
                                 >
-                                    User
-                                    <SortIcon field="user" />
-                                </button>
-                            </th>
-                            <th className="px-4 py-3 text-left text-sm font-medium text-gray-700">
-                                Role
-                            </th>
-                            <th className="px-4 py-3 text-left">
-                                <button
-                                    onClick={() => handleSort('uploads')}
-                                    className="flex items-center gap-1 text-sm font-medium text-gray-700 hover:text-blue-600"
-                                >
-                                    Uploads
-                                    <SortIcon field="uploads" />
+                                    Email
+                                    <SortIcon field="email" />
                                 </button>
                             </th>
                             <th className="px-4 py-3 text-left">
                                 <button
-                                    onClick={() => handleSort('lastActive')}
+                                    onClick={() => handleSort('customerName')}
                                     className="flex items-center gap-1 text-sm font-medium text-gray-700 hover:text-blue-600"
                                 >
-                                    Last Active
-                                    <SortIcon field="lastActive" />
+                                    Customer Name
+                                    <SortIcon field="customerName" />
                                 </button>
                             </th>
                             <th className="px-4 py-3 text-left">
                                 <button
-                                    onClick={() => handleSort('totalViews')}
+                                    onClick={() => handleSort('clientName')}
                                     className="flex items-center gap-1 text-sm font-medium text-gray-700 hover:text-blue-600"
                                 >
-                                    Total Views
-                                    <SortIcon field="totalViews" />
+                                    Client Name
+                                    <SortIcon field="clientName" />
+                                </button>
+                            </th>
+                            <th className="px-4 py-3 text-left">
+                                <button
+                                    onClick={() => handleSort('lastLogin')}
+                                    className="flex items-center gap-1 text-sm font-medium text-gray-700 hover:text-blue-600"
+                                >
+                                    Last Login
+                                    <SortIcon field="lastLogin" />
+                                </button>
+                            </th>
+                            <th className="px-4 py-3 text-left">
+                                <button
+                                    onClick={() => handleSort('isActive')}
+                                    className="flex items-center gap-1 text-sm font-medium text-gray-700 hover:text-blue-600"
+                                >
+                                    Status
+                                    <SortIcon field="isActive" />
                                 </button>
                             </th>
                         </tr>
@@ -120,13 +126,21 @@ export default function ActiveUsersTable({ data, loading }: ActiveUsersTableProp
                     <tbody>
                         {displayedData.map((user) => (
                             <tr key={user.id} className="border-b border-gray-100 hover:bg-gray-50">
-                                <td className="px-4 py-3 text-sm text-gray-900">{user.user}</td>
-                                <td className="px-4 py-3 text-sm text-gray-600">{user.role}</td>
-                                <td className="px-4 py-3 text-sm text-gray-900">{user.uploads}</td>
+                                <td className="px-4 py-3 text-sm text-gray-900">{user.email}</td>
+                                <td className="px-4 py-3 text-sm text-gray-600">{user.customerName}</td>
+                                <td className="px-4 py-3 text-sm text-gray-600">{user.clientName}</td>
                                 <td className="px-4 py-3 text-sm text-gray-600">
-                                    {format(new Date(user.lastActive), 'dd-MM-yyyy')}
+                                    {format(new Date(user.lastLogin), 'dd-MM-yyyy')}
                                 </td>
-                                <td className="px-4 py-3 text-sm text-gray-900">{user.totalViews}</td>
+                                <td className="px-4 py-3 text-sm">
+                                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                                        user.isActive === 'Enabled' 
+                                            ? 'bg-green-100 text-green-800' 
+                                            : 'bg-red-100 text-red-800'
+                                    }`}>
+                                        {user.isActive}
+                                    </span>
+                                </td>
                             </tr>
                         ))}
                     </tbody>

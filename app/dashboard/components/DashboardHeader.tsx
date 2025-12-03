@@ -22,7 +22,7 @@ export default function DashboardHeader({
   onApply,
   data,
 }: DashboardHeaderProps) {
-  const [customerTypes, setCustomerTypes] = useState<string[]>(['all']);
+  const [customerTypes, setCustomerTypes] = useState<Array<{id: string, name: string}>>([{id: 'all', name: 'All Customers'}]);
   const [mediaTypes, setMediaTypes] = useState<string[]>(['all']);
   const [loading, setLoading] = useState(true);
 
@@ -32,7 +32,7 @@ export default function DashboardHeader({
         const response = await fetch('/api/filters');
         if (response.ok) {
           const data = await response.json();
-          setCustomerTypes(data.customers || ['all']);
+          setCustomerTypes(data.customers || [{id: 'all', name: 'All Customers'}]);
           setMediaTypes(data.mediaTypes || ['all']);
         }
       } catch (error) {
