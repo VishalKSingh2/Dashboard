@@ -144,47 +144,45 @@ export async function generateAdvancedReportExcel(
   while (hasMoreTranscriptions) {
     const chunk = await query(`
       SELECT TOP ${CHUNK_SIZE}
-        DATEADD(MONTH, DATEDIFF(MONTH, 0, trs.RequestedDate), 0) AS [Month],
-        trs.Id,
-        trs.VideoId,
-        trs.ThirdPartyId,
-        c.Name AS ParentName,
-        co.Name AS ClientName,
-        trs.ServiceName,
-        trs.CreatedDate,
-        DATEDIFF(SECOND, '1970-01-01', trs.CreatedDate) AS CreatedDateUnix,
-        trs.RequestedDate,
-        DATEDIFF(SECOND, '1970-01-01', trs.RequestedDate) AS RequestedDateUnix,
-        trs.CompletedDate,
-        DATEDIFF(SECOND, '1970-01-01', trs.CompletedDate) AS CompletedDateUnix,
-        trs.Type,
-        trs.TranscriptionStatus,
-        trs.Status,
-        trs.Title,
-        trs.ToIsoCode,
-        trs.ToThirdPartyIsoCode,
-        trs.FromIsoCode,
-        trs.Modified,
-        DATEDIFF(SECOND, '1970-01-01', trs.Modified) AS ModifiedUnix,
-        CAST(trs.LengthInMilliseconds AS MONEY) / 60000 AS LengthInMinutes,
-        trs.MediaSource,
-        trs.UploadSource,
-        trs.Region,
-        trs.LastUpdated
+        DATEADD(MONTH, DATEDIFF(MONTH, 0, [trs].[RequestedDate]), 0) AS [Month],
+        [trs].[Id],
+        [trs].[VideoId],
+        [trs].[ThirdPartyId],
+        [trs].[ParentName],
+        [trs].[ClientName],
+        [trs].[ServiceName],
+        [trs].[CreatedDate],
+        [trs].[CreatedDateUnix],
+        [trs].[RequestedDate],
+        [trs].[RequestedDateUnix],
+        [trs].[CompletedDate],
+        [trs].[CompletedDateUnix],
+        [trs].[Type],
+        [trs].[TranscriptionStatus],
+        [trs].[Status],
+        [trs].[Title],
+        [trs].[ToIsoCode],
+        [trs].[ToThirdPartyIsoCode],
+        [trs].[FromIsoCode],
+        [trs].[Modified],
+        [trs].[ModifiedUnix],
+        CAST([trs].[LengthInMilliseconds] AS MONEY) / 60000 AS [LengthInMinutes],
+        [trs].[MediaSource],
+        [trs].[UploadSource],
+        [trs].[Region],
+        [trs].[LastUpdated]
       FROM 
-        [dbo].[TranscriptionRequestStatistics] AS trs
-        LEFT JOIN ClientOverview co ON RTRIM(trs.ClientId) = RTRIM(co.Id)
-        LEFT JOIN Customer c ON RTRIM(co.CustomerId) = RTRIM(c.Id)
+        [dbo].[SPLUNK_TranscriptionRequestStatistics] AS [trs]
       WHERE
-        trs.RequestedDate >= @Start
-        AND trs.RequestedDate < DATEADD(day, 1, @End)
-        AND trs.Id NOT IN (
+        [trs].[RequestedDate] >= @Start
+        AND [trs].[RequestedDate] < @End
+        AND [trs].[Id] NOT IN (
           SELECT TOP ${transcriptionsOffset} Id 
-          FROM [dbo].[TranscriptionRequestStatistics]
-          WHERE RequestedDate >= @Start AND RequestedDate < DATEADD(day, 1, @End)
+          FROM [dbo].[SPLUNK_TranscriptionRequestStatistics]
+          WHERE RequestedDate >= @Start AND RequestedDate < @End
           ORDER BY RequestedDate
         )
-      ORDER BY trs.RequestedDate
+      ORDER BY [trs].[RequestedDate]
     `, { Start: startDate, End: endDate }).catch(() => []);
 
     if (chunk.length === 0) {
