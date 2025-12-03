@@ -161,7 +161,7 @@ export async function GET(request: NextRequest) {
     const usersWhereClause = `WHERE ${usersWhereConditions.join(' AND ')}`;
 
     const usersQuery = `
-      SELECT TOP 20
+      SELECT
         us.Email,
         c.Name as CustomerName,
         co.Name as ClientName,

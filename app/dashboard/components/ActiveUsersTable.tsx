@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { ActiveUserData } from '@/lib/types';
-import { ArrowUp, ArrowDown } from 'lucide-react';
+import { ArrowUp, ArrowDown, Search } from 'lucide-react';
 import { format } from 'date-fns';
 
 interface ActiveUsersTableProps {
@@ -17,6 +17,7 @@ export default function ActiveUsersTable({ data, loading }: ActiveUsersTableProp
     const [sortField, setSortField] = useState<SortField>('lastLogin');
     const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
     const [displayCount, setDisplayCount] = useState(10);
+    const [searchTerm, setSearchTerm] = useState('');
 
     if (loading) {
         return (
@@ -38,7 +39,18 @@ export default function ActiveUsersTable({ data, loading }: ActiveUsersTableProp
         }
     };
 
-    const sortedData = [...data].sort((a, b) => {
+    // Filter data by search term
+    const filteredData = data.filter(user => {
+        if (!searchTerm) return true;
+        const search = searchTerm.toLowerCase();
+        return (
+            user.email.toLowerCase().includes(search) ||
+            user.clientName.toLowerCase().includes(search) ||
+            user.customerName.toLowerCase().includes(search)
+        );
+    });
+
+    const sortedData = [...filteredData].sort((a, b) => {
         let aValue: any = a[sortField];
         let bValue: any = b[sortField];
 
@@ -70,7 +82,22 @@ export default function ActiveUsersTable({ data, loading }: ActiveUsersTableProp
 
     return (
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <h3 className="font-semibold text-lg text-gray-700 mb-4">Active Users</h3>
+            <div className="flex items-center justify-between mb-4">
+                <h3 className="font-semibold text-lg text-gray-700">Active Users</h3>
+                <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                    <input
+                        type="text"
+                        placeholder="Search by email or client..."
+                        value={searchTerm}
+                        onChange={(e) => {
+                            setSearchTerm(e.target.value);
+                            setDisplayCount(10); // Reset pagination on search
+                        }}
+                        className="pl-9 pr-4 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent w-64"
+                    />
+                </div>
+            </div>
 
             <div className="overflow-x-auto">
                 <table className="w-full">
@@ -158,9 +185,15 @@ export default function ActiveUsersTable({ data, loading }: ActiveUsersTableProp
                 </div>
             )}
 
-            {!hasMore && data.length > 10 && (
+            {!hasMore && sortedData.length > 10 && (
                 <div className="mt-4 text-center text-sm text-gray-500">
-                    Showing all {data.length} users
+                    Showing all {sortedData.length} {searchTerm ? 'matching ' : ''}users
+                </div>
+            )}
+
+            {searchTerm && sortedData.length === 0 && (
+                <div className="mt-4 text-center text-sm text-gray-500">
+                    No users found matching &quot;{searchTerm}&quot;
                 </div>
             )}
         </div>
