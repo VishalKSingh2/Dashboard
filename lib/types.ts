@@ -64,11 +64,11 @@ export interface DashboardFilters {
 
 export interface ActiveUserData {
   id: string;
-  user: string;
-  role: string;
-  uploads: number;
-  lastActive: string; // ISO date string (YYYY-MM-DD)
-  totalViews: number;
+  email: string;
+  customerName: string;
+  clientName: string;
+  lastLogin: string; // ISO date string (YYYY-MM-DD)
+  isActive: string; // 'Enabled' or 'Disabled'
 }
 
 export interface DashboardData {
