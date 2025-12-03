@@ -55,7 +55,7 @@ export default function MetricsGrid({ metrics, loading }: MetricsGridProps) {
       />
 
       <MetricCard
-        title="Active Users (30d)"
+        title="Active Users"
         value={formatNumber(metrics.activeUsers.count)}
         change={{
           value: 0,

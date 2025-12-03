@@ -56,7 +56,8 @@ export async function GET(request: NextRequest) {
     
     // Query for active users with optional customer filter
     const activeUsersWhereConditions: string[] = [
-      'us.LastLogin >= DATEADD(day, -30, GETDATE())',
+      'CAST(us.LastLogin AS DATE) >= @startDate',
+      'CAST(us.LastLogin AS DATE) <= @endDate',
       'us.IsActive = 1'
     ];
     
@@ -81,6 +82,8 @@ export async function GET(request: NextRequest) {
         mediaType: dbMediaType,
       }),
       query(activeUsersQuery, {
+        startDate: filters.startDate,
+        endDate: filters.endDate,
         customerId: filters.customerType,
       })
     ]);
@@ -150,7 +153,8 @@ export async function GET(request: NextRequest) {
 
     // Query 5: Get active users with customer and client information
     const usersWhereConditions: string[] = [
-      'us.LastLogin >= DATEADD(day, -30, GETDATE())',
+      'CAST(us.LastLogin AS DATE) >= @startDate',
+      'CAST(us.LastLogin AS DATE) <= @endDate',
       'us.IsActive = 1'
     ];
     
@@ -179,6 +183,8 @@ export async function GET(request: NextRequest) {
     `;
 
     const activeUsers = await query(usersQuery, {
+      startDate: filters.startDate,
+      endDate: filters.endDate,
       customerId: filters.customerType,
     });
 
