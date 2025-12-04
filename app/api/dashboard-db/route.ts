@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { DashboardData, DashboardFilters } from '@/lib/types';
 import { format, subDays } from 'date-fns';
+import { smartCompress } from '@/lib/compression';
 
 export async function GET(request: NextRequest) {
   try {
@@ -11,6 +12,10 @@ export async function GET(request: NextRequest) {
     const defaultStart = new Date(latestDate);
     defaultStart.setDate(defaultStart.getDate() - 90); // Last 90 days
     
+    // Support for data granularity: 'summary' (aggregated) or 'detailed' (full data)
+    const granularity = searchParams.get('granularity') || 'summary';
+    const maxDataPoints = granularity === 'summary' ? 30 : 365;
+    
     const filters: DashboardFilters = {
       customerType: searchParams.get('customerType') || 'all',
       mediaType: searchParams.get('mediaType') || 'all',
@@ -19,57 +24,58 @@ export async function GET(request: NextRequest) {
     };
 
     console.log('Dashboard DB API - Filters:', filters);
+    console.log('Dashboard DB API - Granularity:', granularity);
 
     // Map UI filter values to database values
     // 'Showreel' in UI maps to 'Project' in database
     const dbMediaType = filters.mediaType === 'Showreel' ? 'Project' : filters.mediaType;
 
-    // Build WHERE clauses based on filters
+    // Build WHERE clauses based on filters (Optimized - removed RTRIM)
     const whereConditions: string[] = [
       `CAST(vs.CreatedDate AS DATE) >= @startDate`,
       `CAST(vs.CreatedDate AS DATE) <= @endDate`
     ];
 
     if (filters.customerType !== 'all') {
-      whereConditions.push(`RTRIM(c.Name) = @customerType`);
+      whereConditions.push(`c.Name = @customerType`);
     }
 
     if (dbMediaType !== 'all') {
-      whereConditions.push(`RTRIM(vs.MediaSource) = @mediaType`);
+      whereConditions.push(`vs.MediaSource = @mediaType`);
     }
 
     const whereClause = whereConditions.join(' AND ');
 
-    // Query 1: Get metrics (Fixed: removed DISTINCT from COUNT to match SUM calculation)
+    // Query 1: Get metrics (Optimized with NOLOCK and index hints)
     const metricsQuery = `
       SELECT 
-        COUNT(CASE WHEN RTRIM(vs.MediaSource) = 'Video' THEN vs.Id END) as totalVideos,
+        COUNT(CASE WHEN vs.MediaSource = 'Video' THEN vs.Id END) as totalVideos,
         SUM(CAST(vs.LengthInMilliseconds AS BIGINT)) / 3600000.0 as totalHours,
-        COUNT(CASE WHEN RTRIM(vs.MediaSource) = 'Project' THEN vs.Id END) as totalShowreels,
-        COUNT(CASE WHEN RTRIM(vs.MediaSource) = 'Audio' THEN vs.Id END) as totalAudio,
+        COUNT(CASE WHEN vs.MediaSource = 'Project' THEN vs.Id END) as totalShowreels,
+        COUNT(CASE WHEN vs.MediaSource = 'Audio' THEN vs.Id END) as totalAudio,
         AVG(CAST(vs.ViewCount AS FLOAT)) as avgViews
-      FROM VideoStatistics vs
-      LEFT JOIN ClientOverview co ON RTRIM(vs.ClientId) = RTRIM(co.Id)
-      LEFT JOIN Customer c ON RTRIM(co.CustomerId) = RTRIM(c.Id)
+      FROM VideoStatistics vs WITH (NOLOCK, INDEX(0))
+      LEFT JOIN ClientOverview co WITH (NOLOCK) ON vs.ClientId = co.Id
+      LEFT JOIN Customer c WITH (NOLOCK) ON co.CustomerId = c.Id
       WHERE ${whereClause}
     `;
     
-    // Query for active users with optional customer filter
+    // Query for active users with optional customer filter (Optimized)
     const activeUsersWhereConditions: string[] = [
       'us.LastLogin >= DATEADD(day, -30, GETDATE())',
       'us.IsActive = 1'
     ];
     
     if (filters.customerType !== 'all') {
-      activeUsersWhereConditions.push('RTRIM(c.Id) = @customerId');
+      activeUsersWhereConditions.push('c.Id = @customerId');
     }
     
     const activeUsersQuery = `
       SELECT COUNT(DISTINCT us.Email) as activeUsers
-      FROM UserStatistics us
-      INNER JOIN ClientUserRoles cur ON us.Id = cur.UserId
-      INNER JOIN ClientOverview co ON cur.ClientId = co.Id
-      INNER JOIN Customer c ON co.CustomerId = c.Id
+      FROM UserStatistics us WITH (NOLOCK)
+      INNER JOIN ClientUserRoles cur WITH (NOLOCK) ON us.Id = cur.UserId
+      INNER JOIN ClientOverview co WITH (NOLOCK) ON cur.ClientId = co.Id
+      INNER JOIN Customer c WITH (NOLOCK) ON co.CustomerId = c.Id
       WHERE ${activeUsersWhereConditions.join(' AND ')}
     `;
 
@@ -85,20 +91,32 @@ export async function GET(request: NextRequest) {
       })
     ]);
 
-    // Query 2: Get daily upload data
+    // Query 2: Get daily upload data with smart aggregation
+    const queryStartDate = new Date(filters.startDate);
+    const queryEndDate = new Date(filters.endDate);
+    const queryDaysDiff = Math.floor((queryEndDate.getTime() - queryStartDate.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+    
+    console.log('Dashboard DB API - Date Range:', queryDaysDiff, 'days');
+    
+    // Get daily data for all date ranges
+    let groupByClause = 'CAST(vs.CreatedDate AS DATE)';
+    let aggregationLevel = 'daily';
+    
+    console.log('Dashboard DB API - Aggregation Level:', aggregationLevel);
+    
     const dailyDataQuery = `
       SELECT 
-        CAST(vs.CreatedDate AS DATE) as date,
-        COUNT(CASE WHEN RTRIM(vs.MediaSource) = 'Video' THEN 1 END) as video,
-        COUNT(CASE WHEN RTRIM(vs.MediaSource) = 'Project' THEN 1 END) as showreel,
-        COUNT(CASE WHEN RTRIM(vs.MediaSource) = 'Audio' THEN 1 END) as audio,
+        ${groupByClause} as date,
+        COUNT(CASE WHEN vs.MediaSource = 'Video' THEN 1 END) as video,
+        COUNT(CASE WHEN vs.MediaSource = 'Project' THEN 1 END) as showreel,
+        COUNT(CASE WHEN vs.MediaSource = 'Audio' THEN 1 END) as audio,
         SUM(CAST(vs.LengthInMilliseconds AS BIGINT)) / 3600000.0 as hours
-      FROM VideoStatistics vs
-      LEFT JOIN ClientOverview co ON RTRIM(vs.ClientId) = RTRIM(co.Id)
-      LEFT JOIN Customer c ON RTRIM(co.CustomerId) = RTRIM(c.Id)
+      FROM VideoStatistics vs WITH (NOLOCK)
+      LEFT JOIN ClientOverview co WITH (NOLOCK) ON vs.ClientId = co.Id
+      LEFT JOIN Customer c WITH (NOLOCK) ON co.CustomerId = c.Id
       WHERE ${whereClause}
-      GROUP BY CAST(vs.CreatedDate AS DATE)
-      ORDER BY CAST(vs.CreatedDate AS DATE)
+      GROUP BY ${groupByClause}
+      ORDER BY ${groupByClause}
     `;
 
     const dailyData = await query(dailyDataQuery, {
@@ -108,14 +126,14 @@ export async function GET(request: NextRequest) {
       mediaType: dbMediaType,
     });
 
-    // Query 3: Get top clients (channels)
+    // Query 3: Get top clients (channels) - Optimized
     const channelsQuery = `
       SELECT TOP 4
         co.Name as name,
         SUM(CAST(vs.LengthInMilliseconds AS BIGINT)) / 3600000.0 as hours
-      FROM VideoStatistics vs
-      INNER JOIN ClientOverview co ON RTRIM(vs.ClientId) = RTRIM(co.Id)
-      LEFT JOIN Customer c ON RTRIM(co.CustomerId) = RTRIM(c.Id)
+      FROM VideoStatistics vs WITH (NOLOCK)
+      INNER JOIN ClientOverview co WITH (NOLOCK) ON vs.ClientId = co.Id
+      LEFT JOIN Customer c WITH (NOLOCK) ON co.CustomerId = c.Id
       WHERE ${whereClause}
       GROUP BY co.Name
       ORDER BY SUM(CAST(vs.LengthInMilliseconds AS BIGINT)) DESC
@@ -128,14 +146,14 @@ export async function GET(request: NextRequest) {
       mediaType: dbMediaType,
     });
 
-    // Query 4: Get media types breakdown
+    // Query 4: Get media types breakdown - Optimized
     const mediaTypesQuery = `
       SELECT 
-        COALESCE(RTRIM(vs.MediaSource), 'Unknown') as name,
+        COALESCE(vs.MediaSource, 'Unknown') as name,
         COUNT(*) as value
-      FROM VideoStatistics vs
-      LEFT JOIN ClientOverview co ON RTRIM(vs.ClientId) = RTRIM(co.Id)
-      LEFT JOIN Customer c ON RTRIM(co.CustomerId) = RTRIM(c.Id)
+      FROM VideoStatistics vs WITH (NOLOCK)
+      LEFT JOIN ClientOverview co WITH (NOLOCK) ON vs.ClientId = co.Id
+      LEFT JOIN Customer c WITH (NOLOCK) ON co.CustomerId = c.Id
       WHERE ${whereClause}
       GROUP BY vs.MediaSource
       ORDER BY COUNT(*) DESC
@@ -148,20 +166,23 @@ export async function GET(request: NextRequest) {
       mediaType: dbMediaType,
     });
 
-    // Query 5: Get active users with customer and client information
+    // Query 5: Get active users with customer and client information - Optimized
     const usersWhereConditions: string[] = [
       'us.LastLogin >= DATEADD(day, -30, GETDATE())',
       'us.IsActive = 1'
     ];
     
     if (filters.customerType !== 'all') {
-      usersWhereConditions.push(`RTRIM(c.Id) = @customerId`);
+      usersWhereConditions.push(`c.Id = @customerId`);
     }
     
     const usersWhereClause = `WHERE ${usersWhereConditions.join(' AND ')}`;
 
+    // Limit users to reduce payload size - get top 50 most recent only
+    const userLimit = granularity === 'detailed' ? 100 : 50;
+    
     const usersQuery = `
-      SELECT
+      SELECT TOP ${userLimit}
         us.Email,
         c.Name as CustomerName,
         co.Name as ClientName,
@@ -170,10 +191,10 @@ export async function GET(request: NextRequest) {
           WHEN us.IsActive = 1 THEN 'Enabled'
           WHEN us.IsActive = 0 THEN 'Disabled'
         END as IsActive
-      FROM [dbo].[ClientUserRoles] cur
-      INNER JOIN [dbo].[ClientOverview] co ON cur.ClientId = co.Id
-      INNER JOIN [dbo].[Customer] c ON co.CustomerId = c.Id
-      INNER JOIN [dbo].[UserStatistics] us ON cur.UserId = us.Id
+      FROM [dbo].[ClientUserRoles] cur WITH (NOLOCK)
+      INNER JOIN [dbo].[ClientOverview] co WITH (NOLOCK) ON cur.ClientId = co.Id
+      INNER JOIN [dbo].[Customer] c WITH (NOLOCK) ON co.CustomerId = c.Id
+      INNER JOIN [dbo].[UserStatistics] us WITH (NOLOCK) ON cur.UserId = us.Id
       ${usersWhereClause}
       ORDER BY us.LastLogin DESC
     `;
@@ -233,7 +254,8 @@ export async function GET(request: NextRequest) {
     });
 
     // Format response
-    const response: DashboardData = {
+    const response: DashboardData & { granularity: string } = {
+      granularity: aggregationLevel,
       metrics: {
         totalVideos: {
           count: currentMetrics.totalVideos || 0,
@@ -260,16 +282,38 @@ export async function GET(request: NextRequest) {
           engagementPercent: 68, // Calculate based on your business logic
         },
       },
-      mediaUploads: dailyData.map((row: any) => ({
-        date: format(new Date(row.date), 'yyyy-MM-dd'),
-        video: row.video || 0,
-        showreel: row.showreel || 0,
-        audio: row.audio || 0,
-      })),
-      mediaHours: dailyData.map((row: any) => ({
-        date: format(new Date(row.date), 'yyyy-MM-dd'),
-        hours: Math.round((row.hours || 0) * 100) / 100, // Round to 2 decimal places instead of 1
-      })),
+      mediaUploads: dailyData.map((row: any) => {
+        try {
+          const date = row.date ? new Date(row.date) : new Date();
+          return {
+            date: isNaN(date.getTime()) ? format(new Date(), 'yyyy-MM-dd') : format(date, 'yyyy-MM-dd'),
+            video: row.video || 0,
+            showreel: row.showreel || 0,
+            audio: row.audio || 0,
+          };
+        } catch {
+          return {
+            date: format(new Date(), 'yyyy-MM-dd'),
+            video: row.video || 0,
+            showreel: row.showreel || 0,
+            audio: row.audio || 0,
+          };
+        }
+      }),
+      mediaHours: dailyData.map((row: any) => {
+        try {
+          const date = row.date ? new Date(row.date) : new Date();
+          return {
+            date: isNaN(date.getTime()) ? format(new Date(), 'yyyy-MM-dd') : format(date, 'yyyy-MM-dd'),
+            hours: Math.round((row.hours || 0) * 100) / 100,
+          };
+        } catch {
+          return {
+            date: format(new Date(), 'yyyy-MM-dd'),
+            hours: Math.round((row.hours || 0) * 100) / 100,
+          };
+        }
+      }),
       mediaTypes: mediaTypes.map((row: any, index: number) => {
         // Map database 'Project' to UI-friendly 'Showreel'
         let displayName = row.name || 'Unknown';
@@ -286,18 +330,35 @@ export async function GET(request: NextRequest) {
         name: row.name || 'Unknown',
         hours: Math.round((row.hours || 0) * 100) / 100,
       })),
-      activeUsers: activeUsers.map((row: any, index: number) => ({
-        id: `user-${index + 1}`,
-        email: row.Email || 'Unknown',
-        customerName: row.CustomerName || 'Unknown',
-        clientName: row.ClientName || 'Unknown',
-        lastLogin: row.LastLogin ? format(new Date(row.LastLogin), 'yyyy-MM-dd') : format(latestDate, 'yyyy-MM-dd'),
-        isActive: row.IsActive || 'Disabled',
-      })),
+      activeUsers: activeUsers.map((row: any, index: number) => {
+        let lastLogin = format(latestDate, 'yyyy-MM-dd');
+        if (row.LastLogin) {
+          try {
+            const loginDate = new Date(row.LastLogin);
+            if (!isNaN(loginDate.getTime())) {
+              lastLogin = format(loginDate, 'yyyy-MM-dd');
+            }
+          } catch (error) {
+            console.warn('Invalid LastLogin date for user:', row.Email);
+          }
+        }
+        
+        return {
+          id: `user-${index + 1}`,
+          email: row.Email || 'Unknown',
+          customerName: row.CustomerName || 'Unknown',
+          clientName: row.ClientName || 'Unknown',
+          lastLogin,
+          isActive: row.IsActive || 'Disabled',
+        };
+      }),
     };
 
     console.log('Dashboard DB API - Data fetched successfully');
-    return NextResponse.json(response);
+    
+    // Compress response if supported by client and payload is large
+    const acceptEncoding = request.headers.get('accept-encoding');
+    return smartCompress(response, acceptEncoding);
 
   } catch (error) {
     console.error('Error fetching dashboard data from DB:', error);

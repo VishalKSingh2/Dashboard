@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "analyze": "ANALYZE=true next build",
+    "lint": "next lint"
   },
   "dependencies": {
     "@types/mssql": "^9.1.8",

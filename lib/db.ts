@@ -1,6 +1,7 @@
 import sql from 'mssql';
+import { queryCache } from './queryCache';
 
-// SQL Server configuration
+// SQL Server configuration - Optimized for better performance
 const config: sql.config = {
   server: process.env.DB_SERVER || '',
   port: parseInt(process.env.DB_PORT || '1433'),
@@ -12,12 +13,16 @@ const config: sql.config = {
     trustServerCertificate: true, // For local dev
     enableArithAbort: true,
     connectTimeout: 30000,
+    // Performance optimization settings
+    packetSize: 32768, // Increase packet size for better throughput
+    abortTransactionOnError: true,
+    useUTC: false, // Use local timezone for better date handling
   },
-  requestTimeout: 120000, // 120 seconds for large queries
+  requestTimeout: 180000, // 180 seconds for very large report queries
   pool: {
-    max: 10,
-    min: 0,
-    idleTimeoutMillis: 30000,
+    max: 20, // Increased from 10 to handle more concurrent requests
+    min: 2, // Keep 2 connections alive to reduce connection overhead
+    idleTimeoutMillis: 60000, // Increased to 60s to reuse connections longer
   },
 };
 
@@ -47,13 +52,25 @@ export async function getPool(): Promise<sql.ConnectionPool> {
 }
 
 /**
- * Execute a SQL query
+ * Execute a SQL query with optional caching
  */
 export async function query<T = any>(
   queryText: string,
   params?: Record<string, any>,
-  timeout?: number
+  options?: { timeout?: number; cache?: boolean; cacheTTL?: number }
 ): Promise<T[]> {
+  const startTime = Date.now();
+  const { timeout, cache = false, cacheTTL } = options || {};
+  
+  // Check cache if enabled
+  if (cache) {
+    const cached = queryCache.get<T[]>(queryText, params);
+    if (cached) {
+      console.log('Cache hit for query');
+      return cached;
+    }
+  }
+  
   try {
     const pool = await getPool();
     const request = pool.request();
@@ -71,11 +88,40 @@ export async function query<T = any>(
     }
 
     const result = await request.query(queryText);
-    return result.recordset as T[];
+    const data = result.recordset as T[];
+    
+    // Cache the result if enabled
+    if (cache) {
+      queryCache.set(queryText, data, params, cacheTTL);
+    }
+    
+    // Log slow queries (> 5 seconds)
+    const duration = Date.now() - startTime;
+    if (duration > 5000) {
+      console.warn(`Slow query detected (${duration}ms):`, {
+        query: queryText.substring(0, 100) + '...',
+        params,
+      });
+    }
+    
+    return data;
   } catch (error) {
     console.error('Database query error:', error);
+    console.error('Query:', queryText.substring(0, 200));
+    console.error('Params:', params);
     throw error;
   }
+}
+
+/**
+ * Execute a SQL query (legacy signature for backward compatibility)
+ */
+export async function queryLegacy<T = any>(
+  queryText: string,
+  params?: Record<string, any>,
+  timeout?: number
+): Promise<T[]> {
+  return query<T>(queryText, params, { timeout });
 }
 
 /**

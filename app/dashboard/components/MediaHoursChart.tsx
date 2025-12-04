@@ -1,5 +1,6 @@
 'use client';
 
+import { memo, useState } from 'react';
 import { MediaHoursData } from '@/lib/types';
 import { formatDateLabel, getDisplayGranularity } from '@/lib/dataAggregation';
 import { format } from 'date-fns';
@@ -20,7 +21,7 @@ interface MediaHoursChartProps {
   endDate?: string;
 }
 
-export default function MediaHoursChart({ data, loading, startDate, endDate }: MediaHoursChartProps) {
+function MediaHoursChart({ data, loading, startDate, endDate }: MediaHoursChartProps) {
   if (loading) {
     return (
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
@@ -179,7 +180,9 @@ export default function MediaHoursChart({ data, loading, startDate, endDate }: M
 
   return (
     <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-      <h3 className="font-semibold text-lg text-gray-700 mb-4">Media Hours by Date</h3>
+      <div className="flex justify-between items-center mb-4">
+        <h3 className="font-semibold text-lg text-gray-700">Media Hours by Date</h3>
+      </div>
       <ResponsiveContainer width="100%" height={320}>
         <BarChart data={chartData}>
           <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
@@ -228,3 +231,6 @@ export default function MediaHoursChart({ data, loading, startDate, endDate }: M
     </div>
   );
 }
+
+// Memoize to prevent unnecessary re-renders
+export default memo(MediaHoursChart);

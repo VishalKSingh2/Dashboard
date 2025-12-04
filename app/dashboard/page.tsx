@@ -1,15 +1,19 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { DashboardData, DashboardFilters } from '@/lib/types';
 import DashboardHeader from './components/DashboardHeader';
 import MetricsGrid from './components/MetricsGrid';
-import MediaUploadsChart from './components/MediaUploadsChart';
-import MediaHoursChart from './components/MediaHoursChart';
-import MediaTypeChart from './components/MediaTypeChart';
-import TopChannelsChart from './components/TopChannelsChart';
-import ActiveUsersTable from './components/ActiveUsersTable';
+import LazyChart from '@/components/ui/LazyChart';
+// Dynamic imports for better code splitting
+import {
+  MediaUploadsChart,
+  MediaHoursChart,
+  MediaTypeChart,
+  TopChannelsChart,
+  ActiveUsersTable,
+} from '@/components/ui/DynamicCharts';
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -30,33 +34,6 @@ export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
-  const fetchData = async () => {
-    setLoading(true);
-    setError(null);
-
-    try {
-      const params = new URLSearchParams({
-        customerType: filters.customerType,
-        mediaType: filters.mediaType,
-        startDate: filters.startDate,
-        endDate: filters.endDate,
-      });
-
-      const response = await fetch(`/api/dashboard-db?${params}`);
-      
-      if (!response.ok) {
-        throw new Error('Failed to fetch dashboard data');
-      }
-
-      const result = await response.json();
-      setData(result);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
-    } finally {
-      setLoading(false);
-    }
-  };
 
   useEffect(() => {
     const newFilters = getDefaultFilters();
@@ -135,13 +112,38 @@ export default function DashboardPage() {
             <MetricsGrid metrics={data.metrics} loading={loading} />
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-              <MediaUploadsChart key={`uploads-${appliedFilters.startDate}-${appliedFilters.endDate}`} data={data.mediaUploads} loading={loading} startDate={appliedFilters.startDate} endDate={appliedFilters.endDate} />
-              <MediaHoursChart key={`hours-${appliedFilters.startDate}-${appliedFilters.endDate}`} data={data.mediaHours} loading={loading} startDate={appliedFilters.startDate} endDate={appliedFilters.endDate} />
-              <MediaTypeChart data={data.mediaTypes} loading={loading} />
-              <TopChannelsChart data={data.topChannels} loading={loading} />
+              <LazyChart>
+                <MediaUploadsChart 
+                  key={`uploads-${appliedFilters.startDate}-${appliedFilters.endDate}`} 
+                  data={data.mediaUploads} 
+                  loading={loading} 
+                  startDate={appliedFilters.startDate} 
+                  endDate={appliedFilters.endDate}
+                />
+              </LazyChart>
+              
+              <LazyChart>
+                <MediaHoursChart 
+                  key={`hours-${appliedFilters.startDate}-${appliedFilters.endDate}`} 
+                  data={data.mediaHours} 
+                  loading={loading} 
+                  startDate={appliedFilters.startDate} 
+                  endDate={appliedFilters.endDate}
+                />
+              </LazyChart>
+              
+              <LazyChart>
+                <MediaTypeChart data={data.mediaTypes} loading={loading} />
+              </LazyChart>
+              
+              <LazyChart>
+                <TopChannelsChart data={data.topChannels} loading={loading} />
+              </LazyChart>
             </div>
 
-            <ActiveUsersTable data={data.activeUsers} loading={loading} />
+            <LazyChart>
+              <ActiveUsersTable data={data.activeUsers} loading={loading} />
+            </LazyChart>
           </>
         )}
 

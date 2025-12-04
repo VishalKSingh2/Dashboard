@@ -1,5 +1,6 @@
 'use client';
 
+import { memo } from 'react';
 import { MediaUploadData } from '@/lib/types';
 import { formatDateLabel, getDisplayGranularity } from '@/lib/dataAggregation';
 import { format } from 'date-fns';
@@ -21,7 +22,7 @@ interface MediaUploadsChartProps {
   endDate?: string;
 }
 
-export default function MediaUploadsChart({ data, loading, startDate, endDate }: MediaUploadsChartProps) {
+function MediaUploadsChart({ data, loading, startDate, endDate }: MediaUploadsChartProps) {
   if (loading) {
     return (
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
@@ -107,7 +108,9 @@ export default function MediaUploadsChart({ data, loading, startDate, endDate }:
 
   return (
     <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-      <h3 className="font-semibold text-lg text-gray-700 mb-4">Media Uploads Over Time</h3>
+      <div className="flex justify-between items-center mb-4">
+        <h3 className="font-semibold text-lg text-gray-700">Media Uploads Over Time</h3>
+      </div>
       <ResponsiveContainer width="100%" height={320}>
         <LineChart data={chartData}>
           <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
@@ -183,3 +186,6 @@ export default function MediaUploadsChart({ data, loading, startDate, endDate }:
     </div>
   );
 }
+
+// Memoize to prevent unnecessary re-renders
+export default memo(MediaUploadsChart);

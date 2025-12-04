@@ -54,41 +54,42 @@ export async function generateAdvancedReportExcel(
 
   while (hasMoreVideos) {
     const chunk = await query(`
-      SELECT TOP ${CHUNK_SIZE}
-        DATEADD(MONTH, DATEDIFF(MONTH, 0, vs.CreatedDate), 0) AS [Month],
-        vs.ClientId,
-        c.Name AS ParentName,
-        co.Name AS ClientName,
-        vs.Title,
-        vs.Id AS VideoId,
-        vs.Region,
-        vs.UserId,
-        vs.CreatedDate AS Created,
-        DATEDIFF(SECOND, '1970-01-01', vs.CreatedDate) AS CreatedUnix,
-        vs.LanguageIsoCode,
-        vs.Status,
-        vs.TranscriptionStatus,
-        vs.ViewCount,
-        CAST(vs.LengthInMilliseconds AS MONEY) / 60000 AS LengthInMinutes,
-        vs.Modified,
-        DATEDIFF(SECOND, '1970-01-01', vs.Modified) AS ModifiedUnix,
-        vs.MediaSource,
-        vs.UploadSource,
-        vs.LastUpdated
-      FROM 
-        [dbo].[VideoStatistics] AS vs
-        LEFT JOIN ClientOverview co ON RTRIM(vs.ClientId) = RTRIM(co.Id)
-        LEFT JOIN Customer c ON RTRIM(co.CustomerId) = RTRIM(c.Id)
-      WHERE
-        vs.CreatedDate >= @Start
-        AND vs.CreatedDate < DATEADD(day, 1, @End)
-        AND vs.Id NOT IN (
-          SELECT TOP ${videosOffset} Id 
-          FROM [dbo].[VideoStatistics] 
-          WHERE CreatedDate >= @Start AND CreatedDate < DATEADD(day, 1, @End)
-          ORDER BY CreatedDate DESC
-        )
-      ORDER BY vs.CreatedDate DESC
+      WITH VideosCTE AS (
+        SELECT 
+          DATEADD(MONTH, DATEDIFF(MONTH, 0, vs.CreatedDate), 0) AS [Month],
+          vs.ClientId,
+          c.Name AS ParentName,
+          co.Name AS ClientName,
+          vs.Title,
+          vs.Id AS VideoId,
+          vs.Region,
+          vs.UserId,
+          vs.CreatedDate AS Created,
+          DATEDIFF(SECOND, '1970-01-01', vs.CreatedDate) AS CreatedUnix,
+          vs.LanguageIsoCode,
+          vs.Status,
+          vs.TranscriptionStatus,
+          vs.ViewCount,
+          CAST(vs.LengthInMilliseconds AS MONEY) / 60000 AS LengthInMinutes,
+          vs.Modified,
+          DATEDIFF(SECOND, '1970-01-01', vs.Modified) AS ModifiedUnix,
+          vs.MediaSource,
+          vs.UploadSource,
+          vs.LastUpdated,
+          ROW_NUMBER() OVER (ORDER BY vs.CreatedDate DESC) AS RowNum
+        FROM [dbo].[VideoStatistics] AS vs WITH (NOLOCK)
+          LEFT JOIN ClientOverview co WITH (NOLOCK) ON vs.ClientId = co.Id
+          LEFT JOIN Customer c WITH (NOLOCK) ON co.CustomerId = c.Id
+        WHERE
+          vs.CreatedDate >= @Start
+          AND vs.CreatedDate < DATEADD(day, 1, @End)
+      )
+      SELECT [Month], ClientId, ParentName, ClientName, Title, VideoId, Region, UserId, 
+             Created, CreatedUnix, LanguageIsoCode, Status, TranscriptionStatus, ViewCount, 
+             LengthInMinutes, Modified, ModifiedUnix, MediaSource, UploadSource, LastUpdated
+      FROM VideosCTE
+      WHERE RowNum > ${videosOffset} AND RowNum <= ${videosOffset + CHUNK_SIZE}
+      ORDER BY RowNum
     `, { Start: startDate, End: endDate });
 
     if (chunk.length === 0) {
@@ -143,46 +144,49 @@ export async function generateAdvancedReportExcel(
 
   while (hasMoreTranscriptions) {
     const chunk = await query(`
-      SELECT TOP ${CHUNK_SIZE}
-        DATEADD(MONTH, DATEDIFF(MONTH, 0, [trs].[RequestedDate]), 0) AS [Month],
-        [trs].[Id],
-        [trs].[VideoId],
-        [trs].[ThirdPartyId],
-        [trs].[ParentName],
-        [trs].[ClientName],
-        [trs].[ServiceName],
-        [trs].[CreatedDate],
-        [trs].[CreatedDateUnix],
-        [trs].[RequestedDate],
-        [trs].[RequestedDateUnix],
-        [trs].[CompletedDate],
-        [trs].[CompletedDateUnix],
-        [trs].[Type],
-        [trs].[TranscriptionStatus],
-        [trs].[Status],
-        [trs].[Title],
-        [trs].[ToIsoCode],
-        [trs].[ToThirdPartyIsoCode],
-        [trs].[FromIsoCode],
-        [trs].[Modified],
-        [trs].[ModifiedUnix],
-        CAST([trs].[LengthInMilliseconds] AS MONEY) / 60000 AS [LengthInMinutes],
-        [trs].[MediaSource],
-        [trs].[UploadSource],
-        [trs].[Region],
-        [trs].[LastUpdated]
-      FROM 
-        [dbo].[SPLUNK_TranscriptionRequestStatistics] AS [trs]
-      WHERE
-        [trs].[RequestedDate] >= @Start
-        AND [trs].[RequestedDate] < @End
-        AND [trs].[Id] NOT IN (
-          SELECT TOP ${transcriptionsOffset} Id 
-          FROM [dbo].[SPLUNK_TranscriptionRequestStatistics]
-          WHERE RequestedDate >= @Start AND RequestedDate < @End
-          ORDER BY RequestedDate
-        )
-      ORDER BY [trs].[RequestedDate]
+      WITH TranscriptionsCTE AS (
+        SELECT
+          DATEADD(MONTH, DATEDIFF(MONTH, 0, [trs].[RequestedDate]), 0) AS [Month],
+          [trs].[Id],
+          [trs].[VideoId],
+          [trs].[ThirdPartyId],
+          [trs].[ParentName],
+          [trs].[ClientName],
+          [trs].[ServiceName],
+          [trs].[CreatedDate],
+          [trs].[CreatedDateUnix],
+          [trs].[RequestedDate],
+          [trs].[RequestedDateUnix],
+          [trs].[CompletedDate],
+          [trs].[CompletedDateUnix],
+          [trs].[Type],
+          [trs].[TranscriptionStatus],
+          [trs].[Status],
+          [trs].[Title],
+          [trs].[ToIsoCode],
+          [trs].[ToThirdPartyIsoCode],
+          [trs].[FromIsoCode],
+          [trs].[Modified],
+          [trs].[ModifiedUnix],
+          CAST([trs].[LengthInMilliseconds] AS MONEY) / 60000 AS [LengthInMinutes],
+          [trs].[MediaSource],
+          [trs].[UploadSource],
+          [trs].[Region],
+          [trs].[LastUpdated],
+          ROW_NUMBER() OVER (ORDER BY [trs].[RequestedDate]) AS RowNum
+        FROM [dbo].[SPLUNK_TranscriptionRequestStatistics] AS [trs] WITH (NOLOCK)
+        WHERE
+          [trs].[RequestedDate] >= @Start
+          AND [trs].[RequestedDate] < @End
+      )
+      SELECT [Month], Id, VideoId, ThirdPartyId, ParentName, ClientName, ServiceName,
+             CreatedDate, CreatedDateUnix, RequestedDate, RequestedDateUnix, CompletedDate,
+             CompletedDateUnix, Type, TranscriptionStatus, Status, Title, ToIsoCode,
+             ToThirdPartyIsoCode, FromIsoCode, Modified, ModifiedUnix, LengthInMinutes,
+             MediaSource, UploadSource, Region, LastUpdated
+      FROM TranscriptionsCTE
+      WHERE RowNum > ${transcriptionsOffset} AND RowNum <= ${transcriptionsOffset + CHUNK_SIZE}
+      ORDER BY RowNum
     `, { Start: startDate, End: endDate }).catch(() => []);
 
     if (chunk.length === 0) {
@@ -244,34 +248,34 @@ export async function generateAdvancedReportExcel(
 
   while (hasMoreShowreels) {
     const chunk = await query(`
-      SELECT TOP ${CHUNK_SIZE}
-        DATEADD(MONTH, DATEDIFF(MONTH, 0, ps.Modified), 0) AS [Month],
-        ps.Id,
-        c.Name AS ParentName,
-        ps.UserId,
-        co.Name AS Name,
-        ps.Title,
-        ps.Region,
-        ps.ProjectStatusText,
-        ps.PublishStatusText AS PublishStatus,
-        ps.Modified,
-        DATEDIFF(SECOND, '1970-01-01', ps.Modified) AS ModifiedUnix,
-        CAST(ps.ProjectLengthInMilliseconds AS MONEY) / 60000 AS ProjectLengthInMinutes,
-        ps.LastUpdated
-      FROM 
-        [dbo].[ProjectStatistics] AS ps
-        LEFT JOIN ClientOverview co ON RTRIM(ps.ClientId) = RTRIM(co.Id)
-        LEFT JOIN Customer c ON RTRIM(co.CustomerId) = RTRIM(c.Id)
-      WHERE
-        ps.Modified >= @Start
-        AND ps.Modified < DATEADD(day, 1, @End)
-        AND ps.Id NOT IN (
-          SELECT TOP ${showreelsOffset} Id 
-          FROM [dbo].[ProjectStatistics]
-          WHERE Modified >= @Start AND Modified < DATEADD(day, 1, @End)
-          ORDER BY Modified
-        )
-      ORDER BY ps.Modified
+      WITH ShowreelsCTE AS (
+        SELECT
+          DATEADD(MONTH, DATEDIFF(MONTH, 0, ps.Modified), 0) AS [Month],
+          ps.Id,
+          c.Name AS ParentName,
+          ps.UserId,
+          co.Name AS Name,
+          ps.Title,
+          ps.Region,
+          ps.ProjectStatusText,
+          ps.PublishStatusText AS PublishStatus,
+          ps.Modified,
+          DATEDIFF(SECOND, '1970-01-01', ps.Modified) AS ModifiedUnix,
+          CAST(ps.ProjectLengthInMilliseconds AS MONEY) / 60000 AS ProjectLengthInMinutes,
+          ps.LastUpdated,
+          ROW_NUMBER() OVER (ORDER BY ps.Modified) AS RowNum
+        FROM [dbo].[ProjectStatistics] AS ps WITH (NOLOCK)
+          LEFT JOIN ClientOverview co WITH (NOLOCK) ON ps.ClientId = co.Id
+          LEFT JOIN Customer c WITH (NOLOCK) ON co.CustomerId = c.Id
+        WHERE
+          ps.Modified >= @Start
+          AND ps.Modified < DATEADD(day, 1, @End)
+      )
+      SELECT [Month], Id, ParentName, UserId, Name, Title, Region, ProjectStatusText,
+             PublishStatus, Modified, ModifiedUnix, ProjectLengthInMinutes, LastUpdated
+      FROM ShowreelsCTE
+      WHERE RowNum > ${showreelsOffset} AND RowNum <= ${showreelsOffset + CHUNK_SIZE}
+      ORDER BY RowNum
     `, { Start: startDate, End: endDate }).catch(() => []);
 
     if (chunk.length === 0) {
@@ -319,34 +323,34 @@ export async function generateAdvancedReportExcel(
 
   while (hasMoreRedaction) {
     const chunk = await query(`
-      SELECT TOP ${CHUNK_SIZE}
-        DATEADD(MONTH, DATEDIFF(MONTH, 0, rrs.CompletedDate), 0) AS [Month],
-        rrs.Id,
-        rrs.LastUpdated,
-        rrs.CreatedDate,
-        rrs.ContentId,
-        rrs.ContentType,
-        rrs.RequestedDate,
-        rrs.CompletedDate,
-        rrs.Status,
-        rrs.Region,
-        c.Name AS [Customer Name],
-        co.Name AS [Channel Name]
-      FROM 
-        [dbo].[RedactionRequestStatistics] AS rrs
-        LEFT JOIN VideoStatistics vs ON RTRIM(vs.Id) = RTRIM(rrs.ContentId)
-        LEFT JOIN ClientOverview co ON RTRIM(vs.ClientId) = RTRIM(co.Id)
-        LEFT JOIN Customer c ON RTRIM(co.CustomerId) = RTRIM(c.Id)
-      WHERE
-        rrs.CompletedDate >= @Start
-        AND rrs.CompletedDate < @End
-        AND rrs.Id NOT IN (
-          SELECT TOP ${redactionOffset} Id 
-          FROM [dbo].[RedactionRequestStatistics]
-          WHERE CompletedDate >= @Start AND CompletedDate < @End
-          ORDER BY CompletedDate
-        )
-      ORDER BY rrs.CompletedDate
+      WITH RedactionCTE AS (
+        SELECT
+          DATEADD(MONTH, DATEDIFF(MONTH, 0, rrs.CompletedDate), 0) AS [Month],
+          rrs.Id,
+          rrs.LastUpdated,
+          rrs.CreatedDate,
+          rrs.ContentId,
+          rrs.ContentType,
+          rrs.RequestedDate,
+          rrs.CompletedDate,
+          rrs.Status,
+          rrs.Region,
+          c.Name AS [Customer Name],
+          co.Name AS [Channel Name],
+          ROW_NUMBER() OVER (ORDER BY rrs.CompletedDate) AS RowNum
+        FROM [dbo].[RedactionRequestStatistics] AS rrs WITH (NOLOCK)
+          LEFT JOIN VideoStatistics vs WITH (NOLOCK) ON vs.Id = rrs.ContentId
+          LEFT JOIN ClientOverview co WITH (NOLOCK) ON vs.ClientId = co.Id
+          LEFT JOIN Customer c WITH (NOLOCK) ON co.CustomerId = c.Id
+        WHERE
+          rrs.CompletedDate >= @Start
+          AND rrs.CompletedDate < @End
+      )
+      SELECT [Month], Id, LastUpdated, CreatedDate, ContentId, ContentType,
+             RequestedDate, CompletedDate, Status, Region, [Customer Name], [Channel Name]
+      FROM RedactionCTE
+      WHERE RowNum > ${redactionOffset} AND RowNum <= ${redactionOffset + CHUNK_SIZE}
+      ORDER BY RowNum
     `, { Start: startDate, End: endDate }).catch(() => []);
 
     if (chunk.length === 0) {

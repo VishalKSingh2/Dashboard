@@ -1,5 +1,6 @@
 'use client';
 
+import { memo } from 'react';
 import { MediaTypeData } from '@/lib/types';
 import {
   PieChart,
@@ -14,7 +15,7 @@ interface MediaTypeChartProps {
   loading?: boolean;
 }
 
-export default function MediaTypeChart({ data, loading }: MediaTypeChartProps) {
+function MediaTypeChart({ data, loading }: MediaTypeChartProps) {
   if (loading) {
     return (
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
@@ -68,3 +69,6 @@ export default function MediaTypeChart({ data, loading }: MediaTypeChartProps) {
     </div>
   );
 }
+
+// Memoize to prevent unnecessary re-renders
+export default memo(MediaTypeChart);

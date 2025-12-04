@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { format } from 'date-fns';
+import { smartCompress } from '@/lib/compression';
 
 export const dynamic = 'force-dynamic';
 
@@ -170,8 +171,8 @@ export async function POST(request: NextRequest) {
       warnings.push('Videos limited to 100,000 records. Use a smaller date range for complete data.');
     }
 
-    // Return the data to be processed on client side
-    return NextResponse.json({
+    // Return the data with compression (report data can be very large)
+    const response = {
       success: true,
       data: {
         videos: videosData,
@@ -191,7 +192,11 @@ export async function POST(request: NextRequest) {
         },
         warnings: warnings.length > 0 ? warnings : undefined,
       },
-    });
+    };
+
+    // Use smart compression for large payloads
+    const acceptEncoding = request.headers.get('accept-encoding');
+    return smartCompress(response, acceptEncoding);
   } catch (error) {
     console.error('Advanced report error:', error);
     return NextResponse.json(
