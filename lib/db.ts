@@ -30,23 +30,34 @@ const config: sql.config = {
 let pool: sql.ConnectionPool | null = null;
 
 /**
- * Get database connection pool
+ * Get database connection pool with health check
  */
 export async function getPool(): Promise<sql.ConnectionPool> {
-  if (!pool || !pool.connected) {
-    // Close existing pool if it exists but is not connected
-    if (pool && !pool.connected) {
+  if (!pool || !pool.connected || !pool.healthy) {
+    // Close existing pool if it exists but is not healthy
+    if (pool) {
       try {
+        console.log('Closing unhealthy connection pool...');
         await pool.close();
       } catch (e) {
-        console.error('Error closing disconnected pool:', e);
+        console.error('Error closing pool:', e);
       }
       pool = null;
     }
     
     console.log('Creating new database connection pool...');
-    pool = await sql.connect(config);
-    console.log('Database connected successfully');
+    try {
+      pool = await sql.connect(config);
+      console.log('Database connected successfully');
+      
+      // Test connection with a simple query
+      await pool.request().query('SELECT 1 AS test');
+      console.log('Connection health check passed');
+    } catch (error) {
+      console.error('Failed to create database pool:', error);
+      pool = null;
+      throw error;
+    }
   }
   return pool;
 }
@@ -71,46 +82,79 @@ export async function query<T = any>(
     }
   }
   
-  try {
-    const pool = await getPool();
-    const request = pool.request();
+  let retries = 0;
+  const MAX_RETRIES = 2;
+  
+  while (retries <= MAX_RETRIES) {
+    try {
+      const pool = await getPool();
+      const request = pool.request();
 
-    // Set request timeout (default 15000ms, can be overridden for large queries)
-    if (timeout) {
-      (request as any).timeout = timeout;
-    }
+      // Set request timeout (default 180000ms for large queries)
+      const requestTimeout = timeout || 180000;
+      (request as any).timeout = requestTimeout;
 
-    // Add parameters if provided
-    if (params) {
-      Object.entries(params).forEach(([key, value]) => {
-        request.input(key, value);
-      });
-    }
+      // Add parameters if provided
+      if (params) {
+        Object.entries(params).forEach(([key, value]) => {
+          request.input(key, value);
+        });
+      }
 
-    const result = await request.query(queryText);
-    const data = result.recordset as T[];
-    
-    // Cache the result if enabled
-    if (cache) {
-      queryCache.set(queryText, data, params, cacheTTL);
+      const result = await request.query(queryText);
+      const data = result.recordset as T[];
+      
+      // Cache the result if enabled
+      if (cache) {
+        queryCache.set(queryText, data, params, cacheTTL);
+      }
+      
+      // Log slow queries (> 5 seconds)
+      const duration = Date.now() - startTime;
+      if (duration > 5000) {
+        console.warn(`Slow query detected (${duration}ms):`, {
+          query: queryText.substring(0, 100) + '...',
+          params,
+        });
+      }
+      
+      return data;
+    } catch (error: any) {
+      retries++;
+      console.error(`Database query error (attempt ${retries}/${MAX_RETRIES + 1}):`, error?.message || error);
+      
+      // Check if it's a connection error that we should retry
+      const isConnectionError = error?.message?.includes('connection') || 
+                                error?.message?.includes('timeout') ||
+                                error?.code === 'ETIMEOUT' ||
+                                error?.code === 'ECONNRESET';
+      
+      if (isConnectionError && retries <= MAX_RETRIES) {
+        console.log('Connection error detected, recreating pool and retrying...');
+        // Force pool recreation by setting the module-level pool to null
+        const currentPool = pool;
+        if (currentPool) {
+          try {
+            await currentPool.close();
+          } catch (e) {
+            // Ignore close errors
+          }
+        }
+        pool = null;
+        
+        // Wait before retry
+        await new Promise(resolve => setTimeout(resolve, 2000 * retries));
+        continue;
+      }
+      
+      // If not a connection error or max retries reached, throw
+      console.error('Query:', queryText.substring(0, 200));
+      console.error('Params:', params);
+      throw error;
     }
-    
-    // Log slow queries (> 5 seconds)
-    const duration = Date.now() - startTime;
-    if (duration > 5000) {
-      console.warn(`Slow query detected (${duration}ms):`, {
-        query: queryText.substring(0, 100) + '...',
-        params,
-      });
-    }
-    
-    return data;
-  } catch (error) {
-    console.error('Database query error:', error);
-    console.error('Query:', queryText.substring(0, 200));
-    console.error('Params:', params);
-    throw error;
   }
+  
+  throw new Error('Query failed after all retries');
 }
 
 /**
