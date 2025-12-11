@@ -79,3 +79,12 @@ export interface DashboardData {
   topChannels: ChannelData[];
   activeUsers: ActiveUserData[];
 }
+
+export type ReportSheetType = 'videos' | 'transcriptions' | 'showreels' | 'redactions';
+
+export interface ReportSheetSelection {
+  videos: boolean;
+  transcriptions: boolean;
+  showreels: boolean;
+  redactions: boolean;
+}

@@ -1,5 +1,6 @@
 'use client';
 
+import { memo } from 'react';
 import { ChannelData } from '@/lib/types';
 import {
   BarChart,
@@ -16,7 +17,7 @@ interface TopChannelsChartProps {
   loading?: boolean;
 }
 
-export default function TopChannelsChart({ data, loading }: TopChannelsChartProps) {
+function TopChannelsChart({ data, loading }: TopChannelsChartProps) {
   const sortedData = [...data].sort((a, b) => b.hours - a.hours);
 
   // Calculate dynamic domain based on highest value
@@ -99,3 +100,6 @@ export default function TopChannelsChart({ data, loading }: TopChannelsChartProp
     </div>
   );
 }
+
+// Memoize to prevent unnecessary re-renders
+export default memo(TopChannelsChart);

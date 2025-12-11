@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
+import { createJobLog, appendJobLog, cleanupOldLogs } from './jobLogger';
 
 export interface ReportJob {
   id: string;
@@ -8,6 +9,7 @@ export interface ReportJob {
   status: 'pending' | 'processing' | 'completed' | 'failed';
   startDate: string;
   endDate: string;
+  sheets?: string[]; // Selected sheets to generate
   createdAt: string;
   completedAt?: string;
   fileName?: string;
@@ -16,6 +18,7 @@ export interface ReportJob {
   downloadUrl?: string;
   expiresAt?: string;
   errorMessage?: string;
+  logFilePath?: string;
 }
 
 const JOBS_DIR = path.join(process.cwd(), 'reports', 'jobs');
@@ -67,20 +70,35 @@ export function writeJobs(jobs: ReportJob[]) {
 /**
  * Create a new job
  */
-export function createJob(email: string, startDate: string, endDate: string): ReportJob {
+export function createJob(email: string, startDate: string, endDate: string, sheets?: string[]): ReportJob {
   const jobs = readJobs();
   
+  const jobId = uuidv4();
+  
+  // Create log file for this job
+  const logFilePath = createJobLog(jobId);
+  appendJobLog(logFilePath, `Job created for email: ${email}`, 'INFO');
+  appendJobLog(logFilePath, `Date range: ${startDate} to ${endDate}`, 'INFO');
+  
+  // Default to all sheets if none specified
+  const selectedSheets = sheets && sheets.length > 0 ? sheets : ['videos', 'transcriptions', 'showreels', 'redactions'];
+  appendJobLog(logFilePath, `Selected sheets: ${selectedSheets.join(', ')}`, 'INFO');
+  
   const newJob: ReportJob = {
-    id: uuidv4(),
+    id: jobId,
     email,
     status: 'pending',
     startDate,
     endDate,
+    sheets: selectedSheets,
     createdAt: new Date().toISOString(),
+    logFilePath,
   };
 
   jobs.push(newJob);
   writeJobs(jobs);
+  
+  appendJobLog(logFilePath, 'Job added to queue', 'SUCCESS');
   
   return newJob;
 }
@@ -122,6 +140,10 @@ export function getPendingJobs(): ReportJob[] {
  * Mark job as processing
  */
 export function startProcessing(jobId: string) {
+  const job = getJob(jobId);
+  if (job?.logFilePath) {
+    appendJobLog(job.logFilePath, 'Job processing started', 'INFO');
+  }
   return updateJob(jobId, { status: 'processing' });
 }
 
@@ -136,6 +158,17 @@ export function completeJob(
 ) {
   const expiresAt = new Date();
   expiresAt.setHours(expiresAt.getHours() + 24); // 24 hours from now
+
+  const job = getJob(jobId);
+  if (job?.logFilePath) {
+    appendJobLog(job.logFilePath, `Report generated successfully`, 'SUCCESS');
+    appendJobLog(job.logFilePath, `File: ${fileName}`, 'INFO');
+    appendJobLog(job.logFilePath, `Size: ${fileSize}`, 'INFO');
+    appendJobLog(job.logFilePath, `Records: ${recordCount.toLocaleString()}`, 'INFO');
+    appendJobLog(job.logFilePath, `Download URL: /reports/${fileName}`, 'INFO');
+    appendJobLog(job.logFilePath, `Expires at: ${expiresAt.toISOString()}`, 'INFO');
+    appendJobLog(job.logFilePath, 'Log file will be deleted in 2 hours', 'INFO');
+  }
 
   return updateJob(jobId, {
     status: 'completed',
@@ -152,6 +185,10 @@ export function completeJob(
  * Mark job as failed
  */
 export function failJob(jobId: string, errorMessage: string) {
+  const job = getJob(jobId);
+  if (job?.logFilePath) {
+    appendJobLog(job.logFilePath, `Job failed: ${errorMessage}`, 'ERROR');
+  }
   return updateJob(jobId, {
     status: 'failed',
     completedAt: new Date().toISOString(),
@@ -192,6 +229,9 @@ export function cleanupExpiredReports() {
       writeJobs(updatedJobs);
       console.log(`Cleaned up ${deletedCount} expired reports`);
     }
+
+    // Also cleanup old log files (backup mechanism)
+    cleanupOldLogs();
 
     return deletedCount;
   } catch (error) {

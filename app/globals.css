@@ -1,5 +1,13 @@
 @import "tailwindcss";
 
+/* Performance optimization: Use font-display swap to prevent font blocking */
+@font-face {
+  font-family: 'Geist';
+  font-display: swap; /* Shows fallback font immediately, swaps when custom font loads */
+  font-style: normal;
+  font-weight: 100 900;
+}
+
 :root {
   --background: #f9fafb;
   --foreground: #111827;

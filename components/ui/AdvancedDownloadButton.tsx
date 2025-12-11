@@ -14,6 +14,12 @@ interface AdvancedDownloadButtonProps {
 export default function AdvancedDownloadButton({ filters, disabled }: AdvancedDownloadButtonProps) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [selectedSheets, setSelectedSheets] = useState({
+    videos: true,
+    transcriptions: true,
+    showreels: true,
+    redactions: true,
+  });
 
   const handleButtonClick = () => {
     setIsModalOpen(true);
@@ -23,6 +29,17 @@ export default function AdvancedDownloadButton({ filters, disabled }: AdvancedDo
     setIsSubmitting(true);
 
     try {
+      // Get selected sheets as array
+      const sheets = Object.entries(selectedSheets)
+        .filter(([_, isSelected]) => isSelected)
+        .map(([sheet, _]) => sheet);
+
+      if (sheets.length === 0) {
+        alert('Please select at least one sheet to generate');
+        setIsSubmitting(false);
+        return;
+      }
+
       // Queue the report generation
       const response = await fetch('/api/queue-report', {
         method: 'POST',
@@ -33,6 +50,7 @@ export default function AdvancedDownloadButton({ filters, disabled }: AdvancedDo
           email,
           startDate: filters.startDate,
           endDate: filters.endDate,
+          sheets,
         }),
       });
 
@@ -74,7 +92,7 @@ export default function AdvancedDownloadButton({ filters, disabled }: AdvancedDo
         onClick={handleButtonClick}
         disabled={disabled || isSubmitting}
         className={cn(
-          'flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-all',
+          'flex flex-col items-start gap-0.5 px-4 py-2 rounded-lg font-medium transition-all',
           'bg-purple-600 text-white hover:bg-purple-700',
           'disabled:opacity-50 disabled:cursor-not-allowed',
           'shadow-sm hover:shadow-md',
@@ -82,8 +100,13 @@ export default function AdvancedDownloadButton({ filters, disabled }: AdvancedDo
         )}
         title="Generate advanced report - You'll receive an email when it's ready"
       >
-        <Download className="w-4 h-4" />
-        {isSubmitting ? 'Submitting...' : 'Advanced Report'}
+        <div className="flex items-center gap-2">
+          <Download className="w-4 h-4" />
+          <span>{isSubmitting ? 'Submitting...' : 'Advanced Report'}</span>
+        </div>
+        <span className="text-[10px] text-purple-200 font-normal">
+          📊 Select sheets & customize
+        </span>
       </button>
 
       <EmailModal
@@ -91,6 +114,8 @@ export default function AdvancedDownloadButton({ filters, disabled }: AdvancedDo
         onClose={() => setIsModalOpen(false)}
         onSubmit={handleSubmitEmail}
         isSubmitting={isSubmitting}
+        selectedSheets={selectedSheets}
+        onSheetToggle={(sheet) => setSelectedSheets(prev => ({ ...prev, [sheet]: !prev[sheet as keyof typeof prev] }))}
       />
     </>
   );

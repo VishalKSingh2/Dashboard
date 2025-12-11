@@ -9,9 +9,11 @@ interface EmailModalProps {
   onClose: () => void;
   onSubmit: (email: string) => void;
   isSubmitting?: boolean;
+  selectedSheets: { videos: boolean; transcriptions: boolean; showreels: boolean; redactions: boolean };
+  onSheetToggle: (sheet: string) => void;
 }
 
-export default function EmailModal({ isOpen, onClose, onSubmit, isSubmitting }: EmailModalProps) {
+export default function EmailModal({ isOpen, onClose, onSubmit, isSubmitting, selectedSheets, onSheetToggle }: EmailModalProps) {
   const [email, setEmail] = useState('');
   const [error, setError] = useState('');
 
@@ -80,6 +82,34 @@ export default function EmailModal({ isOpen, onClose, onSubmit, isSubmitting }: 
 
         {/* Form */}
         <form onSubmit={handleSubmit} className="space-y-4">
+          {/* Sheet Selection */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-3">
+              Select Sheets to Include
+            </label>
+            <div className="space-y-2 bg-gray-50 rounded-lg p-3">
+              {[
+                { key: 'videos', label: 'Videos' },
+                { key: 'transcriptions', label: 'Transcriptions' },
+                { key: 'showreels', label: 'Showreels' },
+                { key: 'redactions', label: 'Redactions' },
+              ].map(({ key, label }) => (
+                <label key={key} className="flex items-center gap-3 cursor-pointer group">
+                  <input
+                    type="checkbox"
+                    checked={selectedSheets[key as keyof typeof selectedSheets]}
+                    onChange={() => onSheetToggle(key)}
+                    disabled={isSubmitting}
+                    className="w-4 h-4 text-purple-600 border-gray-300 rounded focus:ring-purple-500"
+                  />
+                  <span className="text-sm font-medium text-gray-900 group-hover:text-purple-600 transition-colors">
+                    {label}
+                  </span>
+                </label>
+              ))}
+            </div>
+          </div>
+
           <div>
             <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-2">
               Email Address

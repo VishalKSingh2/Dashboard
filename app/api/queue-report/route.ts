@@ -7,12 +7,13 @@ interface QueueReportRequest {
   email: string;
   startDate: string;
   endDate: string;
+  sheets?: string[]; // Optional: selected sheets to generate
 }
 
 export async function POST(request: NextRequest) {
   try {
     const body: QueueReportRequest = await request.json();
-    const { email, startDate, endDate } = body;
+    const { email, startDate, endDate, sheets } = body;
 
     // Validate input
     if (!email || !startDate || !endDate) {
@@ -32,12 +33,13 @@ export async function POST(request: NextRequest) {
     }
 
     // Create job
-    const job = createJob(email, startDate, endDate);
+    const job = createJob(email, startDate, endDate, sheets);
 
     console.log('Report job queued:', {
       jobId: job.id,
       email: job.email,
       dateRange: `${startDate} to ${endDate}`,
+      sheets: job.sheets?.join(', ') || 'all',
     });
 
     // Trigger background processing (fire and forget)

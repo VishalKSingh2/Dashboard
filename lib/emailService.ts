@@ -52,8 +52,23 @@ export async function sendReportReadyEmail(
   startDate: string,
   endDate: string,
   recordCount: number,
-  fileSize: string
+  fileSize: string,
+  sheets?: string[]
 ) {
+  const sheetDescriptions: Record<string, string> = {
+    videos: 'Videos - Complete video statistics and metadata',
+    transcriptions: 'Transcriptions - All transcription requests and status',
+    showreels: 'Showreels - Project statistics and details',
+    redactions: 'Redaction Requests - Redaction tracking information',
+  };
+  
+  const selectedSheets = sheets && sheets.length > 0 
+    ? sheets 
+    : ['videos', 'transcriptions', 'showreels', 'redactions'];
+  
+  const sheetsList = selectedSheets
+    .map(sheet => `<li>${sheetDescriptions[sheet] || sheet}</li>`)
+    .join('\n            ');
   const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000';
   const fullDownloadUrl = `${baseUrl}${downloadUrl}`;
 
@@ -160,10 +175,7 @@ export async function sendReportReadyEmail(
 
           <p><strong>What's included in your report:</strong></p>
           <ul>
-            <li>Videos - Complete video statistics and metadata</li>
-            <li>Transcriptions - All transcription requests and status</li>
-            <li>Showreels - Project statistics and details</li>
-            <li>Redaction Requests - Redaction tracking information</li>
+            ${sheetsList}
           </ul>
 
           <p>If you have any questions or need assistance, please don't hesitate to reach out.</p>
