@@ -17,37 +17,35 @@ const QUERY_TEMPLATES = {
 	videos: (startDate: string, endDate: string, offset: number, limit: number, lastDate?: string, lastId?: string) => ({
 		text: `
 			SELECT TOP (@Limit)
-				DATEADD(MONTH, DATEDIFF(MONTH, 0, vs.CreatedDate), 0) AS [Month],
-				vs.ClientId,
-				c.Name AS ParentName,
-				co.Name AS ClientName,
-				vs.Title,
-				vs.Id AS VideoId,
-				vs.Region,
-				vs.UserId,
-				vs.CreatedDate AS Created,
-				DATEDIFF(SECOND, '1970-01-01', vs.CreatedDate) AS CreatedUnix,
-				vs.LanguageIsoCode,
-				vs.Status,
-				vs.TranscriptionStatus,
-				vs.ViewCount,
-				CAST(vs.LengthInMilliseconds AS MONEY) / 60000 AS LengthInMinutes,
-				vs.Modified,
-				DATEDIFF(SECOND, '1970-01-01', vs.Modified) AS ModifiedUnix,
-				vs.MediaSource,
-				vs.UploadSource,
-				vs.LastUpdated
-			FROM [dbo].[VideoStatistics] AS vs WITH (NOLOCK)
-				LEFT JOIN ClientOverview co WITH (NOLOCK) ON vs.ClientId = co.Id
-				LEFT JOIN Customer c WITH (NOLOCK) ON co.CustomerId = c.Id
-			WHERE vs.CreatedDate >= @Start
-				AND vs.CreatedDate < DATEADD(day, 1, @End)
+				DATEADD(MONTH, DATEDIFF(MONTH, 0, [vs].[Created]), 0) AS [Month],
+				[vs].[ClientId],
+				[vs].[ParentName],
+				[vs].[ClientName],
+				[vs].[Title],
+				[vs].[VideoId],
+				[vs].[Region],
+				[vs].[userId],
+				[vs].[Created],
+				[vs].[CreatedUnix],
+				[vs].[LanguageIsoCode],
+				[vs].[Status],
+				[vs].[TranscriptionStatus],
+				[vs].[ViewCount],
+				CAST([vs].[LengthInMilliseconds] AS MONEY) / 60000 AS [LengthInMinutes],
+				[vs].[Modified],
+				[vs].[ModifiedUnix],
+				[vs].[MediaSource],
+				[vs].[UploadSource],
+				[vs].[LastUpdated]
+			FROM [dbo].[SPLUNK_VideoStatistics] AS [vs] WITH (NOLOCK)
+			WHERE [vs].[Created] >= @Start
+				AND [vs].[Created] <= @End
 				${offset > 0 && lastDate && lastId ? `
 				AND (
-					vs.CreatedDate < @LastDate OR 
-					(vs.CreatedDate = @LastDate AND vs.Id < @LastId)
+					[vs].[Created] < @LastDate OR 
+					([vs].[Created] = @LastDate AND [vs].[VideoId] < @LastId)
 				)` : ''}
-			ORDER BY vs.CreatedDate DESC, vs.Id DESC
+			ORDER BY [vs].[Created], [vs].[VideoId]
 		`,
 		params: {
 			Start: startDate,
@@ -89,7 +87,7 @@ const QUERY_TEMPLATES = {
 				[trs].[LastUpdated]
 			FROM [dbo].[SPLUNK_TranscriptionRequestStatistics] AS [trs] WITH (NOLOCK)
 			WHERE [trs].[RequestedDate] >= @Start
-				AND [trs].[RequestedDate] < @End
+				AND [trs].[RequestedDate] <= @End
 				${offset > 0 && lastDate && lastId ? `
 				AND (
 					[trs].[RequestedDate] > @LastDate OR 
@@ -108,30 +106,31 @@ const QUERY_TEMPLATES = {
 	showreels: (startDate: string, endDate: string, offset: number, limit: number, lastDate?: string, lastId?: string) => ({
 		text: `
 			SELECT TOP (@Limit)
-				DATEADD(MONTH, DATEDIFF(MONTH, 0, ps.Modified), 0) AS [Month],
-				ps.Id,
-				c.Name AS ParentName,
-				ps.UserId,
-				co.Name AS Name,
-				ps.Title,
-				ps.Region,
-				ps.ProjectStatusText,
-				ps.PublishStatusText AS PublishStatus,
-				ps.Modified,
-				DATEDIFF(SECOND, '1970-01-01', ps.Modified) AS ModifiedUnix,
-				CAST(ps.ProjectLengthInMilliseconds AS MONEY) / 60000 AS ProjectLengthInMinutes,
-				ps.LastUpdated
-			FROM [dbo].[ProjectStatistics] AS ps WITH (NOLOCK)
-				LEFT JOIN ClientOverview co WITH (NOLOCK) ON ps.ClientId = co.Id
-				LEFT JOIN Customer c WITH (NOLOCK) ON co.CustomerId = c.Id
-			WHERE ps.Modified >= @Start
-				AND ps.Modified < DATEADD(day, 1, @End)
+				DATEADD(MONTH, DATEDIFF(MONTH, 0, [sps].[Modified]), 0) AS [Month],
+				[sps].[Id],
+				[sps].[ParentName],
+				[sps].[UserId],
+				[sps].[Name],
+				[sps].[Title],
+				[sps].[Region],
+				[slps].[ProjectStatusText],
+				[sps].[PublishStatus],
+				[sps].[Modified],
+				[sps].[ModifiedUnix],
+				CAST([sps].[ProjectLengthInMilliseconds] AS MONEY) / 60000 AS [ProjectLengthInMinutes],
+				[sps].[LastUpdated]
+			FROM [dbo].[ProjectStatistics] AS [ps] WITH (NOLOCK)
+				JOIN [dbo].[ClientOverview] AS [co] WITH (NOLOCK) ON [co].[Id] = [ps].[ClientId]
+				JOIN [dbo].[SPLUNK_ProjectStatistics] AS [sps] WITH (NOLOCK) ON [sps].[id] = [ps].[id]
+				JOIN [dbo].[SPLUNK_LOOKUP_ProjectStatus] AS [slps] WITH (NOLOCK) ON [slps].[ProjectStatus] = [ps].[ProjectStatus]
+			WHERE [sps].[Modified] >= @Start
+				AND [sps].[Modified] <= @End
 				${offset > 0 && lastDate && lastId ? `
 				AND (
-					ps.Modified > @LastDate OR 
-					(ps.Modified = @LastDate AND ps.Id > @LastId)
+					[sps].[Modified] > @LastDate OR 
+					([sps].[Modified] = @LastDate AND [sps].[Id] > @LastId)
 				)` : ''}
-			ORDER BY ps.Modified ASC, ps.Id ASC
+			ORDER BY [sps].[Modified], [sps].[Id]
 		`,
 		params: {
 			Start: startDate,
@@ -154,14 +153,12 @@ const QUERY_TEMPLATES = {
 				rrs.CompletedDate,
 				rrs.Status,
 				rrs.Region,
-				c.Name AS [Customer Name],
-				co.Name AS [Channel Name]
+				[vs].[ParentName] AS [Customer Name],
+				[vs].[ClientName] AS [Channel Name]
 			FROM [dbo].[RedactionRequestStatistics] AS rrs WITH (NOLOCK)
-				LEFT JOIN VideoStatistics vs WITH (NOLOCK) ON vs.Id = rrs.ContentId
-				LEFT JOIN ClientOverview co WITH (NOLOCK) ON vs.ClientId = co.Id
-				LEFT JOIN Customer c WITH (NOLOCK) ON co.CustomerId = c.Id
+				JOIN [dbo].[SPLUNK_VideoStatistics] AS [vs] WITH (NOLOCK) ON [vs].[VideoId] = rrs.ContentId
 			WHERE rrs.CompletedDate >= @Start
-				AND rrs.CompletedDate < @End
+				AND rrs.CompletedDate <= @End
 				${offset > 0 && lastDate && lastId ? `
 				AND (
 					rrs.CompletedDate > @LastDate OR 
