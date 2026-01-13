@@ -23,6 +23,15 @@ export async function GET(request: NextRequest) {
       endDate: searchParams.get('endDate') || format(latestDate, 'yyyy-MM-dd'),
     };
 
+    const parsedEndDate = filters.endDate ? new Date(filters.endDate) : latestDate;
+    const parsedStartDate = filters.startDate ? new Date(filters.startDate) : defaultStart;
+    const effectiveEndDate = !isNaN(parsedEndDate.getTime()) && parsedEndDate < latestDate ? parsedEndDate : latestDate;
+    const effectiveStartDate = !isNaN(parsedStartDate.getTime()) ? parsedStartDate : defaultStart;
+    const rawActiveUserStart = subDays(effectiveEndDate, 30);
+    const activeUserStartDate = rawActiveUserStart > effectiveStartDate ? rawActiveUserStart : effectiveStartDate;
+    const activeUsersStartFormatted = format(activeUserStartDate, 'yyyy-MM-dd');
+    const activeUsersEndFormatted = format(effectiveEndDate, 'yyyy-MM-dd');
+
     console.log('Dashboard DB API - Filters:', filters);
     console.log('Dashboard DB API - Granularity:', granularity);
 
@@ -32,12 +41,12 @@ export async function GET(request: NextRequest) {
 
     // Build WHERE clauses based on filters (Optimized - removed RTRIM)
     const whereConditions: string[] = [
-      `CAST(vs.CreatedDate AS DATE) >= @startDate`,
-      `CAST(vs.CreatedDate AS DATE) <= @endDate`
+      `vs.Created >= @startDate`,
+      `vs.Created <= @endDate`
     ];
 
     if (filters.customerType !== 'all') {
-      whereConditions.push(`c.Name = @customerType`);
+      whereConditions.push(`vs.ParentName = @customerType`);
     }
 
     if (dbMediaType !== 'all') {
@@ -46,23 +55,42 @@ export async function GET(request: NextRequest) {
 
     const whereClause = whereConditions.join(' AND ');
 
+    // Build WHERE clause for showreels (from SPLUNK_ProjectStatistics)
+    const showreelWhereConditions: string[] = [
+      `[sps].[Modified] >= @startDate`,
+      `[sps].[Modified] <= @endDate`
+    ];
+    
+    if (filters.customerType !== 'all') {
+      showreelWhereConditions.push(`[sps].[ParentName] = @customerType`);
+    }
+    
+    const showreelWhereClause = showreelWhereConditions.join(' AND ');
+
     // Query 1: Get metrics (Optimized with NOLOCK and index hints)
     const metricsQuery = `
       SELECT 
-        COUNT(CASE WHEN vs.MediaSource = 'Video' THEN vs.Id END) as totalVideos,
+        COUNT(CASE WHEN vs.MediaSource = 'Video' THEN vs.VideoId END) as totalVideos,
         SUM(CAST(vs.LengthInMilliseconds AS BIGINT)) / 3600000.0 as totalHours,
-        COUNT(CASE WHEN vs.MediaSource = 'Project' THEN vs.Id END) as totalShowreels,
-        COUNT(CASE WHEN vs.MediaSource = 'Audio' THEN vs.Id END) as totalAudio,
+        COUNT(CASE WHEN vs.MediaSource = 'Audio' THEN vs.VideoId END) as totalAudio,
         AVG(CAST(vs.ViewCount AS FLOAT)) as avgViews
-      FROM VideoStatistics vs WITH (NOLOCK, INDEX(0))
-      LEFT JOIN ClientOverview co WITH (NOLOCK) ON vs.ClientId = co.Id
-      LEFT JOIN Customer c WITH (NOLOCK) ON co.CustomerId = c.Id
+      FROM SPLUNK_VideoStatistics vs WITH (NOLOCK, INDEX(0))
       WHERE ${whereClause}
+    `;
+    
+    const showreelsQuery = `
+      SELECT COUNT(*) as totalShowreels
+      FROM [dbo].[ProjectStatistics] AS [ps] WITH (NOLOCK)
+        JOIN [dbo].[ClientOverview] AS [co] WITH (NOLOCK) ON [co].[Id] = [ps].[ClientId]
+        JOIN [dbo].[SPLUNK_ProjectStatistics] AS [sps] WITH (NOLOCK) ON [sps].[id] = [ps].[id]
+        JOIN [dbo].[SPLUNK_LOOKUP_ProjectStatus] AS [slps] WITH (NOLOCK) ON [slps].[ProjectStatus] = [ps].[ProjectStatus]
+      WHERE ${showreelWhereClause}
     `;
     
     // Query for active users with optional customer filter (Optimized)
     const activeUsersWhereConditions: string[] = [
-      'us.LastLogin >= DATEADD(day, -30, GETDATE())',
+      'us.LastLogin >= @activeUserStartDate',
+      'us.LastLogin < DATEADD(day, 1, @activeUserEndDate)',
       'us.IsActive = 1'
     ];
     
@@ -79,15 +107,22 @@ export async function GET(request: NextRequest) {
       WHERE ${activeUsersWhereConditions.join(' AND ')}
     `;
 
-    const [metrics, activeUsersResult] = await Promise.all([
+    const [metrics, showreelsResult, activeUsersResult] = await Promise.all([
       query(metricsQuery, {
         startDate: filters.startDate,
         endDate: filters.endDate,
         customerType: filters.customerType,
         mediaType: dbMediaType,
       }),
+      query(showreelsQuery, {
+        startDate: filters.startDate,
+        endDate: filters.endDate,
+        customerType: filters.customerType,
+      }),
       query(activeUsersQuery, {
         customerId: filters.customerType,
+        activeUserStartDate: activeUsersStartFormatted,
+        activeUserEndDate: activeUsersEndFormatted,
       })
     ]);
 
@@ -99,43 +134,69 @@ export async function GET(request: NextRequest) {
     console.log('Dashboard DB API - Date Range:', queryDaysDiff, 'days');
     
     // Get daily data for all date ranges
-    let groupByClause = 'CAST(vs.CreatedDate AS DATE)';
+    let groupByClause = 'CAST(vs.Created AS DATE)';
     let aggregationLevel = 'daily';
     
     console.log('Dashboard DB API - Aggregation Level:', aggregationLevel);
     
     const dailyDataQuery = `
       SELECT 
-        ${groupByClause} as date,
+        ${groupByClause.replace('vs.CreatedDate', 'vs.Created')} as date,
         COUNT(CASE WHEN vs.MediaSource = 'Video' THEN 1 END) as video,
-        COUNT(CASE WHEN vs.MediaSource = 'Project' THEN 1 END) as showreel,
         COUNT(CASE WHEN vs.MediaSource = 'Audio' THEN 1 END) as audio,
         SUM(CAST(vs.LengthInMilliseconds AS BIGINT)) / 3600000.0 as hours
-      FROM VideoStatistics vs WITH (NOLOCK)
-      LEFT JOIN ClientOverview co WITH (NOLOCK) ON vs.ClientId = co.Id
-      LEFT JOIN Customer c WITH (NOLOCK) ON co.CustomerId = c.Id
+      FROM SPLUNK_VideoStatistics vs WITH (NOLOCK)
       WHERE ${whereClause}
       GROUP BY ${groupByClause}
       ORDER BY ${groupByClause}
     `;
+    
+    const dailyShowreelsQuery = `
+      SELECT 
+        CAST([sps].[Modified] AS DATE) as date,
+        COUNT(*) as showreel
+      FROM [dbo].[ProjectStatistics] AS [ps] WITH (NOLOCK)
+        JOIN [dbo].[ClientOverview] AS [co] WITH (NOLOCK) ON [co].[Id] = [ps].[ClientId]
+        JOIN [dbo].[SPLUNK_ProjectStatistics] AS [sps] WITH (NOLOCK) ON [sps].[id] = [ps].[id]
+        JOIN [dbo].[SPLUNK_LOOKUP_ProjectStatus] AS [slps] WITH (NOLOCK) ON [slps].[ProjectStatus] = [ps].[ProjectStatus]
+      WHERE ${showreelWhereClause}
+      GROUP BY CAST([sps].[Modified] AS DATE)
+      ORDER BY CAST([sps].[Modified] AS DATE)
+    `;
 
-    const dailyData = await query(dailyDataQuery, {
-      startDate: filters.startDate,
-      endDate: filters.endDate,
-      customerType: filters.customerType,
-      mediaType: dbMediaType,
+    const [dailyData, dailyShowreels] = await Promise.all([
+      query(dailyDataQuery, {
+        startDate: filters.startDate,
+        endDate: filters.endDate,
+        customerType: filters.customerType,
+        mediaType: dbMediaType,
+      }),
+      query(dailyShowreelsQuery, {
+        startDate: filters.startDate,
+        endDate: filters.endDate,
+        customerType: filters.customerType,
+      })
+    ]);
+    
+    // Merge showreel data into dailyData
+    const showreelMap = new Map(dailyShowreels.map((row: any) => [
+      format(new Date(row.date), 'yyyy-MM-dd'),
+      row.showreel || 0
+    ]));
+    
+    dailyData.forEach((row: any) => {
+      const dateKey = format(new Date(row.date), 'yyyy-MM-dd');
+      row.showreel = showreelMap.get(dateKey) || 0;
     });
 
     // Query 3: Get top clients (channels) - Optimized
     const channelsQuery = `
       SELECT TOP 4
-        co.Name as name,
+        vs.ClientName as name,
         SUM(CAST(vs.LengthInMilliseconds AS BIGINT)) / 3600000.0 as hours
-      FROM VideoStatistics vs WITH (NOLOCK)
-      INNER JOIN ClientOverview co WITH (NOLOCK) ON vs.ClientId = co.Id
-      LEFT JOIN Customer c WITH (NOLOCK) ON co.CustomerId = c.Id
+      FROM SPLUNK_VideoStatistics vs WITH (NOLOCK)
       WHERE ${whereClause}
-      GROUP BY co.Name
+      GROUP BY vs.ClientName
       ORDER BY SUM(CAST(vs.LengthInMilliseconds AS BIGINT)) DESC
     `;
 
@@ -151,9 +212,7 @@ export async function GET(request: NextRequest) {
       SELECT 
         COALESCE(vs.MediaSource, 'Unknown') as name,
         COUNT(*) as value
-      FROM VideoStatistics vs WITH (NOLOCK)
-      LEFT JOIN ClientOverview co WITH (NOLOCK) ON vs.ClientId = co.Id
-      LEFT JOIN Customer c WITH (NOLOCK) ON co.CustomerId = c.Id
+      FROM SPLUNK_VideoStatistics vs WITH (NOLOCK)
       WHERE ${whereClause}
       GROUP BY vs.MediaSource
       ORDER BY COUNT(*) DESC
@@ -165,10 +224,19 @@ export async function GET(request: NextRequest) {
       customerType: filters.customerType,
       mediaType: dbMediaType,
     });
+    
+    // Add showreels to media types (from SPLUNK_ProjectStatistics)
+    if (showreelsResult[0]?.totalShowreels > 0) {
+      mediaTypes.push({
+        name: 'Project',
+        value: showreelsResult[0].totalShowreels
+      });
+    }
 
     // Query 5: Get active users with customer and client information - Optimized
     const usersWhereConditions: string[] = [
-      'us.LastLogin >= DATEADD(day, -30, GETDATE())',
+      'us.LastLogin >= @activeUserStartDate',
+      'us.LastLogin < DATEADD(day, 1, @activeUserEndDate)',
       'us.IsActive = 1'
     ];
     
@@ -201,6 +269,8 @@ export async function GET(request: NextRequest) {
 
     const activeUsers = await query(usersQuery, {
       customerId: filters.customerType,
+      activeUserStartDate: activeUsersStartFormatted,
+      activeUserEndDate: activeUsersEndFormatted,
     });
 
     // Calculate previous period for comparison
@@ -213,16 +283,37 @@ export async function GET(request: NextRequest) {
 
     // Query for previous period metrics
     const prevMetricsQuery = metricsQuery.replace(/@startDate/g, '@prevStartDate').replace(/@endDate/g, '@prevEndDate');
-    const prevMetrics = await query(prevMetricsQuery, {
-      prevStartDate,
-      prevEndDate,
-      customerType: filters.customerType,
-      mediaType: dbMediaType,
-    });
+    const prevShowreelsQuery = showreelsQuery.replace(/@startDate/g, '@prevStartDate').replace(/@endDate/g, '@prevEndDate');
+    
+    const [prevMetrics, prevShowreels] = await Promise.all([
+      query(prevMetricsQuery, {
+        prevStartDate,
+        prevEndDate,
+        customerType: filters.customerType,
+        mediaType: dbMediaType,
+      }),
+      query(prevShowreelsQuery, {
+        prevStartDate,
+        prevEndDate,
+        customerType: filters.customerType,
+      })
+    ]);
 
     // Calculate changes
-    const currentMetrics = metrics[0] || { totalVideos: 0, totalHours: 0, totalShowreels: 0, totalAudio: 0, avgViews: 0 };
-    const previousMetrics = prevMetrics[0] || { totalVideos: 0, totalHours: 0, totalShowreels: 0, totalAudio: 0, avgViews: 0 };
+    const currentMetrics = {
+      totalVideos: metrics[0]?.totalVideos || 0,
+      totalHours: metrics[0]?.totalHours || 0,
+      totalShowreels: showreelsResult[0]?.totalShowreels || 0,
+      totalAudio: metrics[0]?.totalAudio || 0,
+      avgViews: metrics[0]?.avgViews || 0
+    };
+    const previousMetrics = {
+      totalVideos: prevMetrics[0]?.totalVideos || 0,
+      totalHours: prevMetrics[0]?.totalHours || 0,
+      totalShowreels: prevShowreels[0]?.totalShowreels || 0,
+      totalAudio: prevMetrics[0]?.totalAudio || 0,
+      avgViews: prevMetrics[0]?.avgViews || 0
+    };
     const activeUsersCount = activeUsersResult[0]?.activeUsers || 0;
 
     const calculateChange = (current: number, previous: number) => {
@@ -331,7 +422,7 @@ export async function GET(request: NextRequest) {
         hours: Math.round((row.hours || 0) * 100) / 100,
       })),
       activeUsers: activeUsers.map((row: any, index: number) => {
-        let lastLogin = format(latestDate, 'yyyy-MM-dd');
+        let lastLogin = activeUsersEndFormatted;
         if (row.LastLogin) {
           try {
             const loginDate = new Date(row.LastLogin);

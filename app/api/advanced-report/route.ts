@@ -36,34 +36,32 @@ export async function POST(request: NextRequest) {
       // Query 1: Videos (Limited to prevent memory issues with large exports)
       query(`
         SELECT TOP 100000
-          DATEADD(MONTH, DATEDIFF(MONTH, 0, vs.CreatedDate), 0) AS [Month],
-          vs.ClientId,
-          c.Name AS ParentName,
-          co.Name AS ClientName,
-          vs.Title,
-          vs.Id AS VideoId,
-          vs.Region,
-          vs.UserId,
-          vs.CreatedDate AS Created,
-          DATEDIFF(SECOND, '1970-01-01', vs.CreatedDate) AS CreatedUnix,
-          vs.LanguageIsoCode,
-          vs.Status,
-          vs.TranscriptionStatus,
-          vs.ViewCount,
-          CAST(vs.LengthInMilliseconds AS MONEY) / 60000 AS LengthInMinutes,
-          vs.Modified,
-          DATEDIFF(SECOND, '1970-01-01', vs.Modified) AS ModifiedUnix,
-          vs.MediaSource,
-          vs.UploadSource,
-          vs.LastUpdated
+          DATEADD(MONTH, DATEDIFF(MONTH, 0, [vs].[Created]), 0) AS [Month],
+          [vs].[ClientId],
+          [vs].[ParentName],
+          [vs].[ClientName],
+          [vs].[Title],
+          [vs].[VideoId],
+          [vs].[Region],
+          [vs].[userId],
+          [vs].[Created],
+          [vs].[CreatedUnix],
+          [vs].[LanguageIsoCode],
+          [vs].[Status],
+          [vs].[TranscriptionStatus],
+          [vs].[ViewCount],
+          CAST([vs].[LengthInMilliseconds] AS MONEY) / 60000 AS [LengthInMinutes],
+          [vs].[Modified],
+          [vs].[ModifiedUnix],
+          [vs].[MediaSource],
+          [vs].[UploadSource],
+          [vs].[LastUpdated]
         FROM 
-          [dbo].[VideoStatistics] AS vs
-          LEFT JOIN ClientOverview co ON RTRIM(vs.ClientId) = RTRIM(co.Id)
-          LEFT JOIN Customer c ON RTRIM(co.CustomerId) = RTRIM(c.Id)
+          [dbo].[SPLUNK_VideoStatistics] AS [vs]
         WHERE
-          vs.CreatedDate >= @Start
-          AND vs.CreatedDate < DATEADD(day, 1, @End)
-        ORDER BY vs.CreatedDate DESC
+          [vs].[Created] >= @Start
+          AND [vs].[Created] <= @End
+        ORDER BY [vs].[Created]
       `, { Start: startDate, End: endDate }),
 
       // Query 2: Transcriptions (Using SPLUNK_TranscriptionRequestStatistics)
@@ -100,60 +98,59 @@ export async function POST(request: NextRequest) {
           [dbo].[SPLUNK_TranscriptionRequestStatistics] AS [trs]
         WHERE
           [trs].[RequestedDate] >= @Start
-          AND [trs].[RequestedDate] < @End
+          AND [trs].[RequestedDate] <= @End
         ORDER BY [trs].[RequestedDate]
       `, { Start: startDate, End: endDate }).catch(() => []),
 
-      // Query 3: Showreels (Fixed to use ProjectStatistics table)
+      // Query 3: Showreels (Using SPLUNK_ProjectStatistics table)
       query(`
         SELECT 
-          DATEADD(MONTH, DATEDIFF(MONTH, 0, ps.Modified), 0) AS [Month],
-          ps.Id,
-          c.Name AS ParentName,
-          ps.UserId,
-          co.Name AS Name,
-          ps.Title,
-          ps.Region,
-          ps.ProjectStatusText,
-          ps.PublishStatusText AS PublishStatus,
-          ps.Modified,
-          DATEDIFF(SECOND, '1970-01-01', ps.Modified) AS ModifiedUnix,
-          CAST(ps.ProjectLengthInMilliseconds AS MONEY) / 60000 AS ProjectLengthInMinutes,
-          ps.LastUpdated
+          DATEADD(MONTH, DATEDIFF(MONTH, 0, [sps].[Modified]), 0) AS [Month],
+          [sps].[Id],
+          [sps].[ParentName],
+          [sps].[UserId],
+          [sps].[Name],
+          [sps].[Title],
+          [sps].[Region],
+          [slps].[ProjectStatusText],
+          [sps].[PublishStatus],
+          [sps].[Modified],
+          [sps].[ModifiedUnix],
+          CAST([sps].[ProjectLengthInMilliseconds] AS MONEY) / 60000 AS [ProjectLengthInMinutes],
+          [sps].[LastUpdated]
         FROM 
-          [dbo].[ProjectStatistics] AS ps
-          LEFT JOIN ClientOverview co ON RTRIM(ps.ClientId) = RTRIM(co.Id)
-          LEFT JOIN Customer c ON RTRIM(co.CustomerId) = RTRIM(c.Id)
+          [dbo].[ProjectStatistics] AS [ps]
+          JOIN [dbo].[ClientOverview] AS [co] ON [co].[Id] = [ps].[ClientId]
+          JOIN [dbo].[SPLUNK_ProjectStatistics] AS [sps] ON [sps].[id] = [ps].[id]
+          JOIN [dbo].[SPLUNK_LOOKUP_ProjectStatus] AS [slps] ON [slps].[ProjectStatus] = [ps].[ProjectStatus]
         WHERE
-          ps.Modified >= @Start
-          AND ps.Modified < DATEADD(day, 1, @End)
-        ORDER BY ps.Modified
+          [sps].[Modified] >= @Start
+          AND [sps].[Modified] <= @End
+        ORDER BY [sps].[Modified]
       `, { Start: startDate, End: endDate }).catch(() => []),
 
       // Query 4: Redaction Requests (if table exists)
       query(`
         SELECT 
-          DATEADD(MONTH, DATEDIFF(MONTH, 0, rrs.CompletedDate), 0) AS [Month],
-          rrs.Id,
-          rrs.LastUpdated,
-          rrs.CreatedDate,
-          rrs.ContentId,
-          rrs.ContentType,
-          rrs.RequestedDate,
-          rrs.CompletedDate,
-          rrs.Status,
-          rrs.Region,
-          c.Name AS [Customer Name],
-          co.Name AS [Channel Name]
+          DATEADD(MONTH, DATEDIFF(MONTH, 0, [rrs].[CompletedDate]), 0) AS [Month],
+          [rrs].[Id],
+          [rrs].[LastUpdated],
+          [rrs].[CreatedDate],
+          [rrs].[ContentId],
+          [rrs].[ContentType],
+          [rrs].[RequestedDate],
+          [rrs].[CompletedDate],
+          [rrs].[Status],
+          [rrs].[Region],
+          [vs].[ParentName] AS [Customer Name],
+          [vs].[ClientName] AS [Channel Name]
         FROM 
-          [dbo].[RedactionRequestStatistics] AS rrs
-          LEFT JOIN VideoStatistics vs ON RTRIM(vs.Id) = RTRIM(rrs.ContentId)
-          LEFT JOIN ClientOverview co ON RTRIM(vs.ClientId) = RTRIM(co.Id)
-          LEFT JOIN Customer c ON RTRIM(co.CustomerId) = RTRIM(c.Id)
+          [dbo].[RedactionRequestStatistics] AS [rrs]
+          JOIN [dbo].[SPLUNK_VideoStatistics] AS [vs] ON [vs].[VideoId] = [rrs].[ContentId]
         WHERE
-          rrs.CompletedDate >= @Start
-          AND rrs.CompletedDate < @End
-        ORDER BY rrs.CompletedDate
+          [rrs].[CompletedDate] >= @Start
+          AND [rrs].[CompletedDate] <= @End
+        ORDER BY [rrs].[CompletedDate]
       `, { Start: startDate, End: endDate }).catch(() => []),
     ]);
 

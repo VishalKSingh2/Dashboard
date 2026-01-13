@@ -18,7 +18,7 @@ const config: sql.config = {
     abortTransactionOnError: true,
     useUTC: false, // Use local timezone for better date handling
   },
-  requestTimeout: 180000, // 180 seconds for very large report queries
+  requestTimeout: 600000, // 10 minutes for very large report queries on unindexed DB
   pool: {
     max: 20, // Increased from 10 to handle more concurrent requests
     min: 2, // Keep 2 connections alive to reduce connection overhead

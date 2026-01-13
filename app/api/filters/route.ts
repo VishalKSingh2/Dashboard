@@ -28,7 +28,7 @@ export async function GET(request: NextRequest) {
     // Get unique media types
     const mediaTypesQuery = `
       SELECT DISTINCT RTRIM(MediaSource) as MediaSource
-      FROM VideoStatistics
+      FROM SPLUNK_VideoStatistics
       WHERE MediaSource IS NOT NULL
       ORDER BY RTRIM(MediaSource)
     `;
