@@ -23,6 +23,15 @@ export async function GET(request: NextRequest) {
       endDate: searchParams.get('endDate') || format(latestDate, 'yyyy-MM-dd'),
     };
 
+    const parsedEndDate = filters.endDate ? new Date(filters.endDate) : latestDate;
+    const parsedStartDate = filters.startDate ? new Date(filters.startDate) : defaultStart;
+    const effectiveEndDate = !isNaN(parsedEndDate.getTime()) && parsedEndDate < latestDate ? parsedEndDate : latestDate;
+    const effectiveStartDate = !isNaN(parsedStartDate.getTime()) ? parsedStartDate : defaultStart;
+    const rawActiveUserStart = subDays(effectiveEndDate, 30);
+    const activeUserStartDate = rawActiveUserStart > effectiveStartDate ? rawActiveUserStart : effectiveStartDate;
+    const activeUsersStartFormatted = format(activeUserStartDate, 'yyyy-MM-dd');
+    const activeUsersEndFormatted = format(effectiveEndDate, 'yyyy-MM-dd');
+
     console.log('Dashboard DB API - Filters:', filters);
     console.log('Dashboard DB API - Granularity:', granularity);
 
@@ -80,7 +89,8 @@ export async function GET(request: NextRequest) {
     
     // Query for active users with optional customer filter (Optimized)
     const activeUsersWhereConditions: string[] = [
-      'us.LastLogin >= DATEADD(day, -30, GETDATE())',
+      'us.LastLogin >= @activeUserStartDate',
+      'us.LastLogin < DATEADD(day, 1, @activeUserEndDate)',
       'us.IsActive = 1'
     ];
     
@@ -111,6 +121,8 @@ export async function GET(request: NextRequest) {
       }),
       query(activeUsersQuery, {
         customerId: filters.customerType,
+        activeUserStartDate: activeUsersStartFormatted,
+        activeUserEndDate: activeUsersEndFormatted,
       })
     ]);
 
@@ -223,7 +235,8 @@ export async function GET(request: NextRequest) {
 
     // Query 5: Get active users with customer and client information - Optimized
     const usersWhereConditions: string[] = [
-      'us.LastLogin >= DATEADD(day, -30, GETDATE())',
+      'us.LastLogin >= @activeUserStartDate',
+      'us.LastLogin < DATEADD(day, 1, @activeUserEndDate)',
       'us.IsActive = 1'
     ];
     
@@ -256,6 +269,8 @@ export async function GET(request: NextRequest) {
 
     const activeUsers = await query(usersQuery, {
       customerId: filters.customerType,
+      activeUserStartDate: activeUsersStartFormatted,
+      activeUserEndDate: activeUsersEndFormatted,
     });
 
     // Calculate previous period for comparison
@@ -407,7 +422,7 @@ export async function GET(request: NextRequest) {
         hours: Math.round((row.hours || 0) * 100) / 100,
       })),
       activeUsers: activeUsers.map((row: any, index: number) => {
-        let lastLogin = format(latestDate, 'yyyy-MM-dd');
+        let lastLogin = activeUsersEndFormatted;
         if (row.LastLogin) {
           try {
             const loginDate = new Date(row.LastLogin);

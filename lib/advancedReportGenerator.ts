@@ -4,7 +4,7 @@ import fs from 'fs';
 import archiver from 'archiver';
 
 const BATCH_SIZE = 50000; // Write 50k records per batch to Excel
-const DB_CHUNK_SIZE = 25000; // Reduced to 25k to improve query performance and reduce memory pressure
+const DB_CHUNK_SIZE = 10000; // Fetch 10k records per chunk (reduced for unindexed DB to avoid timeouts)
 
 interface ExcelGenerationResult {
 	fileName: string;
