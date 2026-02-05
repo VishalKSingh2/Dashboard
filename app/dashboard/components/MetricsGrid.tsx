@@ -64,17 +64,6 @@ export default function MetricsGrid({ metrics, loading }: MetricsGridProps) {
         }}
         loading={loading}
       />
-
-      <MetricCard
-        title="Avg Views per Media"
-        value={formatHours(metrics.avgViewsPerMedia.average)}
-        change={{
-          value: metrics.avgViewsPerMedia.engagementPercent,
-          type: 'increase',
-          label: 'Engagement',
-        }}
-        loading={loading}
-      />
     </div>
   );
 }
