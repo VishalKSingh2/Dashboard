@@ -61,7 +61,10 @@ export default function SearchableSelect({
     setIsOpen(false);
     setSearchTerm('');
     if (onChange) {
-      onChange({ target: { value: optionId } });
+      // Pass the name instead of id for non-'all' options
+      const option = normalizedOptions.find(opt => opt.id === optionId);
+      const valueToPass = optionId === 'all' ? 'all' : (option?.name || optionId);
+      onChange({ target: { value: valueToPass } });
     }
   };
 
