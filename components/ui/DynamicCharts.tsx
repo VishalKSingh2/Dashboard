@@ -37,11 +37,3 @@ export const TopChannelsChart = dynamic(
     ssr: false,
   }
 );
-
-export const ActiveUsersTable = dynamic(
-  () => import('@/app/dashboard/components/ActiveUsersTable'),
-  {
-    loading: () => <ChartSkeleton />,
-    ssr: false,
-  }
-);

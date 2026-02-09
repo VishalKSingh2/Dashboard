@@ -12,7 +12,6 @@ import {
   MediaHoursChart,
   MediaTypeChart,
   TopChannelsChart,
-  ActiveUsersTable,
 } from '@/components/ui/DynamicCharts';
 
 export default function DashboardPage() {
@@ -35,40 +34,39 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const fetchData = useCallback(async () => {
+    const newFilters = getDefaultFilters();
+    setLoading(true);
+    setError(null);
+
+    try {
+      const params = new URLSearchParams({
+        customerType: newFilters.customerType,
+        mediaType: newFilters.mediaType,
+        startDate: newFilters.startDate,
+        endDate: newFilters.endDate,
+      });
+
+      const response = await fetch(`/api/dashboard-db?${params}`);
+      
+      if (!response.ok) {
+        throw new Error('Failed to fetch dashboard data');
+      }
+
+      const result = await response.json();
+      setData(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setLoading(false);
+    }
+  }, [searchParams]);
+
   useEffect(() => {
     const newFilters = getDefaultFilters();
     setFilters(newFilters);
-    
-    // Fetch data with the URL params on initial load and when URL changes
-    const fetchWithParams = async () => {
-      setLoading(true);
-      setError(null);
-
-      try {
-        const params = new URLSearchParams({
-          customerType: newFilters.customerType,
-          mediaType: newFilters.mediaType,
-          startDate: newFilters.startDate,
-          endDate: newFilters.endDate,
-        });
-
-        const response = await fetch(`/api/dashboard-db?${params}`);
-        
-        if (!response.ok) {
-          throw new Error('Failed to fetch dashboard data');
-        }
-
-        const result = await response.json();
-        setData(result);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'An error occurred');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchWithParams();
-  }, [searchParams]);
+    fetchData();
+  }, [searchParams, fetchData]);
 
   const handleApply = () => {
     const params = new URLSearchParams({
@@ -140,10 +138,6 @@ export default function DashboardPage() {
                 <TopChannelsChart data={data.topChannels} loading={loading} />
               </LazyChart>
             </div>
-
-            <LazyChart>
-              <ActiveUsersTable data={data.activeUsers} loading={loading} />
-            </LazyChart>
           </>
         )}
 
