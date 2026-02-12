@@ -9,7 +9,7 @@ interface MetricsGridProps {
 
 export default function MetricsGrid({ metrics, loading }: MetricsGridProps) {
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+    <div className="grid grid-rows-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
       <MetricCard
         title="Total Videos Uploaded"
         value={formatNumber(metrics.totalVideos.count)}
