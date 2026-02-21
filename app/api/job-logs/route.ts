@@ -21,7 +21,6 @@ export async function GET(request: NextRequest) {
 
       const formattedJobs = jobs.map((job) => ({
         jobId: job.jobId,
-        email: job.email,
         status: job.status,
         phase: job.phase,
         progress: job.progress,
@@ -65,7 +64,6 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       success: true,
       jobId: job.jobId,
-      email: job.email,
       status: job.status,
       phase: job.phase,
       progress: job.progress,
