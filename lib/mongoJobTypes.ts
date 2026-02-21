@@ -30,9 +30,6 @@ export interface ReportJobDocument {
   /** Human-readable job ID (UUID) */
   jobId: string;
 
-  /** User's email for notification */
-  email: string;
-
   /** Current job status */
   status: JobStatus;
 
@@ -108,7 +105,6 @@ export interface ReportJobDocument {
 
 /** Request body for POST /api/queue-report */
 export interface QueueReportRequest {
-  email: string;
   startDate: string;
   endDate: string;
   sheets?: string[];

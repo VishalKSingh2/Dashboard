@@ -1,10 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { generateAdvancedReportExcel } from '@/lib/advancedReportGenerator';
-import fs from 'fs';
-import path from 'path';
+import { generateReportToGridFS } from '@/lib/gridfsReportGenerator';
+import { buildDownloadUrl } from '@/lib/gridfs';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300; // 5 minutes max execution time
+
+/**
+ * POST /api/generate-report
+ * 
+ * Generates a report, stores it in GridFS, and returns the download URL.
+ * The client then redirects/downloads from /api/download/:fileId.
+ * 
+ * This replaces the old synchronous blob-download approach.
+ */
 
 interface GenerateReportRequest {
   startDate: string;
@@ -29,7 +37,6 @@ export async function POST(request: NextRequest) {
     const validSheets = ['videos', 'transcriptions', 'showreels', 'redactions'];
     const selectedSheets = sheets && sheets.length > 0 ? sheets : validSheets;
     
-    // Check if any invalid sheets
     const invalidSheets = selectedSheets.filter(sheet => !validSheets.includes(sheet));
     if (invalidSheets.length > 0) {
       return NextResponse.json(
@@ -44,43 +51,23 @@ export async function POST(request: NextRequest) {
       sheets: selectedSheets.join(', '),
     });
 
-    // Generate the report
+    // Generate the report and store in GridFS
     const startTime = Date.now();
-    const result = await generateAdvancedReportExcel(
-      startDate,
-      endDate,
-      selectedSheets
-    );
+    const result = await generateReportToGridFS(startDate, endDate, selectedSheets);
     const duration = ((Date.now() - startTime) / 1000).toFixed(2);
 
-    console.log(`Report generated in ${duration}s:`, result.fileName);
+    console.log(`Report generated in ${duration}s: ${result.fileName} (${result.fileSize})`);
 
-    // Read the file
-    const fileBuffer = fs.readFileSync(result.filePath);
-    
-    // Create response with file download
-    const response = new NextResponse(fileBuffer, {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/zip',
-        'Content-Disposition': `attachment; filename="${result.fileName}"`,
-        'Content-Length': fileBuffer.length.toString(),
-      },
+    // Return the download URL — client will fetch from /api/download/:fileId
+    const downloadUrl = buildDownloadUrl(result.fileId);
+
+    return NextResponse.json({
+      success: true,
+      fileName: result.fileName,
+      fileSize: result.fileSize,
+      recordCount: result.recordCount,
+      downloadUrl,
     });
-
-    // Clean up file after a short delay (to ensure download starts)
-    setTimeout(() => {
-      try {
-        if (fs.existsSync(result.filePath)) {
-          fs.unlinkSync(result.filePath);
-          console.log(`Cleaned up file: ${result.fileName}`);
-        }
-      } catch (err) {
-        console.error('Failed to cleanup file:', err);
-      }
-    }, 5000); // 5 second delay
-
-    return response;
   } catch (error) {
     console.error('Report generation error:', error);
     return NextResponse.json(

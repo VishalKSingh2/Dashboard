@@ -39,7 +39,7 @@ export default function AdvancedDownloadButton({ filters, disabled }: AdvancedDo
         return;
       }
 
-      // Generate and download the report
+      // Generate the report (stored in GridFS) and get download URL
       const response = await fetch('/api/generate-report', {
         method: 'POST',
         headers: {
@@ -57,22 +57,26 @@ export default function AdvancedDownloadButton({ filters, disabled }: AdvancedDo
         throw new Error(error.error || 'Failed to generate report');
       }
 
-      // Get the filename from the response headers
-      const contentDisposition = response.headers.get('content-disposition');
-      const filenameMatch = contentDisposition?.match(/filename="(.+)"/);
-      const filename = filenameMatch ? filenameMatch[1] : 'Advanced_Report.zip';
+      const result = await response.json();
 
-      // Create a blob from the response
-      const blob = await response.blob();
+      if (!result.success || !result.downloadUrl) {
+        throw new Error('Report generated but no download URL returned');
+      }
 
-      // Create download link and trigger download
+      // Download the file from GridFS via /api/download/:fileId
+      const downloadResponse = await fetch(result.downloadUrl);
+      if (!downloadResponse.ok) {
+        throw new Error('Failed to download the generated report');
+      }
+
+      const blob = await downloadResponse.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = filename;
+      a.download = result.fileName || 'Advanced_Report.zip';
       document.body.appendChild(a);
       a.click();
-      
+
       // Cleanup
       window.URL.revokeObjectURL(url);
       document.body.removeChild(a);
@@ -80,14 +84,15 @@ export default function AdvancedDownloadButton({ filters, disabled }: AdvancedDo
       // Close modal and show success message
       setIsModalOpen(false);
       
-      // Show success notification
       alert(
         `✅ Report Downloaded Successfully!\n\n` +
         `The advanced report has been downloaded to your system.\n` +
-        `Filename: ${filename}`
+        `Filename: ${result.fileName}\n` +
+        `Size: ${result.fileSize}\n` +
+        `Records: ${result.recordCount?.toLocaleString()}`
       );
 
-      console.log('Report downloaded:', filename);
+      console.log('Report downloaded:', result.fileName);
     } catch (error) {
       console.error('Failed to generate report:', error);
       alert(

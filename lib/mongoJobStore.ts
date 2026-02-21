@@ -89,7 +89,6 @@ export async function createJob(request: QueueReportRequest): Promise<ReportJobD
   const job: ReportJobDocument = {
     _id: new ObjectId(),
     jobId,
-    email: request.email,
     status: 'pending',
     phase: 'queued',
     progress: 0,

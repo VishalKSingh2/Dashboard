@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getLogFilePath, readJobLog, formatLogForDisplay, listActiveLogs } from '@/lib/jobLogger';
+import { getJob, getJobs } from '@/lib/mongoJobStore';
 
 export const dynamic = 'force-dynamic';
 
 /**
- * GET /api/job-logs?jobId=xxx - Get log file for a specific job
- * GET /api/job-logs?list=true - List all active log files
+ * GET /api/job-logs?jobId=xxx  - Get status/progress for a specific job
+ * GET /api/job-logs?list=true  - List all recent jobs
+ * 
+ * Now reads from MongoDB instead of file-based logs.
  */
 export async function GET(request: NextRequest) {
   try {
@@ -13,21 +15,37 @@ export async function GET(request: NextRequest) {
     const jobId = searchParams.get('jobId');
     const listAll = searchParams.get('list') === 'true';
 
-    // List all active logs
+    // List all recent jobs
     if (listAll) {
-      const logFiles = listActiveLogs();
-      const formattedLogs = logFiles
-        .map(logFile => formatLogForDisplay(logFile))
-        .filter(log => log !== null);
+      const jobs = await getJobs({ limit: 50 });
+
+      const formattedJobs = jobs.map((job) => ({
+        jobId: job.jobId,
+        email: job.email,
+        status: job.status,
+        phase: job.phase,
+        progress: job.progress,
+        sheets: job.sheets,
+        startDate: job.startDate,
+        endDate: job.endDate,
+        createdAt: job.createdAt,
+        completedAt: job.completedAt,
+        fileName: job.fileName,
+        fileSize: job.fileSize,
+        recordCount: job.recordCount,
+        downloadUrl: job.downloadUrl,
+        errorMessage: job.errorMessage,
+        progressDetails: job.progressDetails,
+      }));
 
       return NextResponse.json({
         success: true,
-        count: formattedLogs.length,
-        logs: formattedLogs,
+        count: formattedJobs.length,
+        jobs: formattedJobs,
       });
     }
 
-    // Get specific job log
+    // Get specific job
     if (!jobId) {
       return NextResponse.json(
         { error: 'jobId parameter is required' },
@@ -35,31 +53,34 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const logFilePath = getLogFilePath(jobId);
-    
-    if (!logFilePath) {
+    const job = await getJob(jobId);
+
+    if (!job) {
       return NextResponse.json(
-        { error: 'Log file not found for this job (may have been deleted after 2 hours)' },
+        { error: 'Job not found (may have expired)' },
         { status: 404 }
       );
     }
 
-    const logContent = readJobLog(logFilePath);
-    
-    if (!logContent) {
-      return NextResponse.json(
-        { error: 'Unable to read log file' },
-        { status: 500 }
-      );
-    }
-
-    const logInfo = formatLogForDisplay(logFilePath);
-
     return NextResponse.json({
       success: true,
-      jobId,
-      logInfo,
-      content: logContent,
+      jobId: job.jobId,
+      email: job.email,
+      status: job.status,
+      phase: job.phase,
+      progress: job.progress,
+      sheets: job.sheets,
+      startDate: job.startDate,
+      endDate: job.endDate,
+      createdAt: job.createdAt,
+      startedAt: job.startedAt,
+      completedAt: job.completedAt,
+      fileName: job.fileName,
+      fileSize: job.fileSize,
+      recordCount: job.recordCount,
+      downloadUrl: job.downloadUrl,
+      errorMessage: job.errorMessage,
+      progressDetails: job.progressDetails,
     });
   } catch (error) {
     console.error('Error reading job logs:', error);
