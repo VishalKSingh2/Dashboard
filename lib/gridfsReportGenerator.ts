@@ -1,28 +1,28 @@
 import { query } from './db';
-import { PassThrough, Readable } from 'stream';
+import { PassThrough } from 'stream';
 import archiver from 'archiver';
-import { uploadFile } from './gridfs';
+import { getUploadStream } from './gridfs';
 import { JobPhase } from './mongoJobTypes';
 
 /**
- * GridFS Report Generator
- * 
- * Generates Excel reports and streams the resulting ZIP directly
- * into MongoDB GridFS — no local filesystem writes.
- * 
- * This is the "Worker" component from the sequence diagram:
- *   DB (SQL Server) → Worker (this file) → Blob Storage (GridFS)
- * 
- * The original advancedReportGenerator.ts is kept intact for the
- * direct-download flow (/api/generate-report).
- * 
- * Key difference from advancedReportGenerator.ts:
- *   - Excel files are written to in-memory buffers (not disk)
- *   - ZIP archive is streamed into GridFS via uploadFile()
- *   - Progress callback notifies the caller (process-jobs) at each step
+ * GridFS Report Generator — TRUE STREAMING
+ *
+ * Architecture (per sequence diagram):
+ *   DB → fetch 10k chunk → write rows to Excel stream → pipe to ZIP → pipe to GridFS
+ *
+ * Each sheet is processed one at a time:
+ *   1. Open a streaming Excel writer pointing at a PassThrough
+ *   2. The PassThrough is appended to the archiver (ZIP) as an entry
+ *   3. Fetch 10k rows from SQL Server
+ *   4. Format + commit rows immediately to the Excel stream
+ *   5. Repeat step 3-4 until no more rows
+ *   6. Commit the worksheet & finalize the workbook writer (closes the PassThrough)
+ *   7. Move to next sheet
+ *
+ * The archiver pipes into the GridFS upload stream, so data flows
+ * from DB → Excel → ZIP → MongoDB with minimal memory buffering.
  */
 
-const BATCH_SIZE = 50000;
 const DB_CHUNK_SIZE = 10000;
 
 // ─── Types ───────────────────────────────────────────────────────────
@@ -43,7 +43,7 @@ export interface ProgressCallback {
   }): Promise<void>;
 }
 
-// ─── Query Templates (same as advancedReportGenerator.ts) ────────────
+// ─── Query Templates ─────────────────────────────────────────────────
 
 const QUERY_TEMPLATES = {
   videos: (startDate: string, endDate: string, offset: number, limit: number, lastDate?: string, lastId?: string) => ({
@@ -207,24 +207,25 @@ const QUERY_TEMPLATES = {
   })
 };
 
+// ─── Cursor field mapping (for keyset pagination) ────────────────────
+
+const CURSOR_FIELDS: Record<string, { dateField: string; idField: string }> = {
+  videos:         { dateField: 'Created',       idField: 'VideoId' },
+  transcriptions: { dateField: 'RequestedDate', idField: 'Id' },
+  showreels:      { dateField: 'Modified',      idField: 'Id' },
+  redactions:     { dateField: 'CompletedDate', idField: 'Id' },
+};
+
 // ─── Date Formatters ─────────────────────────────────────────────────
 
 const formatDate = (date: any) => {
   if (!date) return '';
-  try {
-    return new Date(date).toISOString().split('T')[0];
-  } catch {
-    return date;
-  }
+  try { return new Date(date).toISOString().split('T')[0]; } catch { return date; }
 };
 
 const formatDateTime = (date: any) => {
   if (!date) return '';
-  try {
-    return new Date(date).toISOString().replace('T', ' ').split('.')[0];
-  } catch {
-    return date;
-  }
+  try { return new Date(date).toISOString().replace('T', ' ').split('.')[0]; } catch { return date; }
 };
 
 // ─── Row Formatters ──────────────────────────────────────────────────
@@ -322,78 +323,118 @@ const SHEET_NAMES: Record<string, string> = {
   redactions: 'Redaction Requests',
 };
 
-// ─── Data Fetching (cursor-based, same logic) ───────────────────────
+// ─── Stream a single sheet: fetch chunk → write to Excel → repeat ───
 
-async function fetchAllData(
-  queryType: keyof typeof QUERY_TEMPLATES,
+/**
+ * Fetches data from SQL Server in 10k-row chunks and writes each chunk
+ * immediately to the ExcelJS streaming workbook writer.
+ *
+ * The workbook writer is backed by a PassThrough stream that the caller
+ * has already appended to the ZIP archive, so bytes flow:
+ *   DB → format row → worksheet.addRow().commit() → PassThrough → archiver → GridFS
+ *
+ * Returns the total number of rows written.
+ */
+async function streamSheetToExcel(
+  ExcelJS: any,
+  excelStream: PassThrough,
+  sheetType: string,
+  sheetName: string,
   startDate: string,
   endDate: string,
-  onChunkFetched?: (rowsSoFar: number) => void,
-): Promise<any[]> {
-  const allData: any[] = [];
+  formatter: (row: any) => Record<string, any>,
+  onChunkWritten?: (rowsSoFar: number) => void,
+): Promise<number> {
+  const workbookWriter = new ExcelJS.stream.xlsx.WorkbookWriter({
+    stream: excelStream,
+    useSharedStrings: false,
+    useStyles: false,
+  });
+
+  const worksheet = workbookWriter.addWorksheet(sheetName);
+
+  let headerKeys: string[] | null = null;
+  let totalRows = 0;
   let offset = 0;
   let hasMore = true;
   let lastDate: string | undefined;
   let lastId: string | undefined;
   let consecutiveErrors = 0;
   const MAX_RETRIES = 3;
+  const cursorFields = CURSOR_FIELDS[sheetType];
 
-  console.log(`[${queryType}] Starting data fetch...`);
+  console.log(`[${sheetType}] Streaming: fetch chunk → write to Excel...`);
 
   while (hasMore) {
     try {
-      const queryConfig = QUERY_TEMPLATES[queryType](
+      // ── Fetch one chunk from DB ──
+      const queryConfig = QUERY_TEMPLATES[sheetType as keyof typeof QUERY_TEMPLATES](
         startDate, endDate, offset, DB_CHUNK_SIZE, lastDate, lastId,
       );
 
-      const chunkStartTime = Date.now();
+      const chunkStart = Date.now();
       const chunk = await Promise.race([
         query(queryConfig.text, queryConfig.params, { timeout: 180000 }),
         new Promise<any[]>((_, reject) =>
           setTimeout(() => reject(new Error('Query timeout after 3 minutes')), 180000),
         ),
       ]);
-      const chunkDuration = ((Date.now() - chunkStartTime) / 1000).toFixed(2);
-      console.log(`[${queryType}] Chunk fetched in ${chunkDuration}s`);
+      const chunkMs = Date.now() - chunkStart;
 
       if (!chunk || chunk.length === 0) {
         hasMore = false;
-      } else {
-        allData.push(...chunk);
-        offset += chunk.length;
-        consecutiveErrors = 0;
-
-        // Cursor tracking
-        const lastRow = chunk[chunk.length - 1];
-        if (queryType === 'videos') {
-          lastDate = lastRow.Created;
-          lastId = lastRow.VideoId;
-        } else if (queryType === 'transcriptions') {
-          lastDate = lastRow.RequestedDate;
-          lastId = lastRow.Id;
-        } else if (queryType === 'showreels') {
-          lastDate = lastRow.Modified;
-          lastId = lastRow.Id;
-        } else if (queryType === 'redactions') {
-          lastDate = lastRow.CompletedDate;
-          lastId = lastRow.Id;
-        }
-
-        console.log(`[${queryType}] Total so far: ${allData.length}`);
-        onChunkFetched?.(allData.length);
-
-        if (chunk.length < DB_CHUNK_SIZE) {
-          hasMore = false;
-        }
-
-        await new Promise((resolve) => setImmediate(resolve));
+        break;
       }
+
+      console.log(`[${sheetType}] Chunk ${offset}–${offset + chunk.length} fetched in ${(chunkMs / 1000).toFixed(2)}s → writing rows...`);
+
+      // ── Write rows immediately ──
+      for (const row of chunk) {
+        const formatted = formatter(row);
+
+        // Set headers on the first row
+        if (!headerKeys) {
+          headerKeys = Object.keys(formatted);
+          worksheet.columns = headerKeys.map((key) => ({
+            header: key,
+            key,
+            width: Math.min(Math.max(key.length + 2, 12), 60),
+          }));
+        }
+
+        const rowData: Record<string, unknown> = {};
+        for (const key of headerKeys) {
+          rowData[key] = formatted[key] ?? null;
+        }
+        worksheet.addRow(rowData).commit();
+      }
+
+      // Update cursors
+      offset += chunk.length;
+      totalRows += chunk.length;
+      consecutiveErrors = 0;
+
+      const lastRow = chunk[chunk.length - 1];
+      if (cursorFields) {
+        lastDate = lastRow[cursorFields.dateField];
+        lastId = lastRow[cursorFields.idField];
+      }
+
+      onChunkWritten?.(totalRows);
+
+      if (chunk.length < DB_CHUNK_SIZE) {
+        hasMore = false;
+      }
+
+      // Yield to event loop so the stream can flush
+      await new Promise((resolve) => setImmediate(resolve));
+
     } catch (error) {
       consecutiveErrors++;
-      console.error(`[${queryType}] Error (attempt ${consecutiveErrors}/${MAX_RETRIES}):`, error);
+      console.error(`[${sheetType}] Error (attempt ${consecutiveErrors}/${MAX_RETRIES}):`, error);
 
       if (consecutiveErrors >= MAX_RETRIES) {
-        console.error(`[${queryType}] Max retries reached. Returning ${allData.length} records.`);
+        console.error(`[${sheetType}] Max retries reached. Written ${totalRows} rows so far.`);
         hasMore = false;
       } else {
         const waitTime = Math.min(1000 * Math.pow(2, consecutiveErrors - 1), 10000);
@@ -402,146 +443,30 @@ async function fetchAllData(
     }
   }
 
-  console.log(`[${queryType}] Completed: ${allData.length} total records`);
-  return allData;
-}
-
-// ─── Write Excel to Buffer (in-memory, no disk) ─────────────────────
-
-async function writeExcelToBuffer(
-  ExcelJS: any,
-  sheetName: string,
-  data: any[],
-  formatter: (row: any) => Record<string, any>,
-): Promise<Buffer> {
-  console.log(`[${sheetName}] Writing ${data.length} rows to in-memory buffer...`);
-
-  if (data.length === 0) {
-    const emptyWorkbook = new ExcelJS.Workbook();
-    const ws = emptyWorkbook.addWorksheet(sheetName);
-    ws.addRow(['No data available for the selected date range']);
-    const buffer = await emptyWorkbook.xlsx.writeBuffer();
-    return Buffer.from(buffer);
+  // Handle empty sheet
+  if (totalRows === 0) {
+    worksheet.addRow({ A: 'No data available for the selected date range' }).commit();
   }
 
-  // Use streaming workbook writer → write to PassThrough → collect buffer
-  const passThrough = new PassThrough();
-  const chunks: Buffer[] = [];
-
-  passThrough.on('data', (chunk: Buffer) => chunks.push(chunk));
-  const bufferPromise = new Promise<Buffer>((resolve, reject) => {
-    passThrough.on('end', () => resolve(Buffer.concat(chunks)));
-    passThrough.on('error', reject);
-  });
-
-  const streamingWorkbook = new ExcelJS.stream.xlsx.WorkbookWriter({
-    stream: passThrough,
-    useSharedStrings: false,
-    useStyles: false,
-  });
-  const worksheet = streamingWorkbook.addWorksheet(sheetName);
-
-  let headerKeys: string[] | null = null;
-  let processedRows = 0;
-
-  for (let start = 0; start < data.length; start += BATCH_SIZE) {
-    const end = Math.min(start + BATCH_SIZE, data.length);
-
-    for (let i = start; i < end; i++) {
-      const formatted = formatter(data[i]);
-
-      if (!headerKeys) {
-        headerKeys = Object.keys(formatted);
-        worksheet.columns = headerKeys.map((key) => ({
-          header: key,
-          key,
-          width: Math.min(Math.max(key.length + 2, 12), 60),
-        }));
-      }
-
-      const rowData: Record<string, unknown> = {};
-      headerKeys.forEach((key) => {
-        rowData[key] = formatted[key] ?? null;
-      });
-      worksheet.addRow(rowData).commit();
-    }
-
-    processedRows += end - start;
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-
+  // Finalize the workbook → closes the PassThrough stream
   worksheet.commit();
-  await streamingWorkbook.commit();
+  await workbookWriter.commit();
 
-  const buffer = await bufferPromise;
-  console.log(`[${sheetName}] ✓ Buffer ready (${(buffer.length / 1024 / 1024).toFixed(2)} MB)`);
-  return buffer;
-}
-
-// ─── Create ZIP and stream to GridFS ─────────────────────────────────
-
-async function createZipAndUploadToGridFS(
-  excelBuffers: { name: string; buffer: Buffer }[],
-  zipFileName: string,
-): Promise<{ fileId: string; fileSize: string }> {
-  console.log(`Creating ZIP and uploading to GridFS: ${zipFileName}`);
-
-  // Create ZIP in memory → then upload the complete buffer to GridFS
-  const archive = archiver('zip', { zlib: { level: 6 } });
-  const chunks: Buffer[] = [];
-  const passThrough = new PassThrough();
-
-  passThrough.on('data', (chunk: Buffer) => chunks.push(chunk));
-
-  const zipBufferPromise = new Promise<Buffer>((resolve, reject) => {
-    passThrough.on('end', () => resolve(Buffer.concat(chunks)));
-    passThrough.on('error', reject);
-    archive.on('error', reject);
-  });
-
-  archive.pipe(passThrough);
-
-  for (const { name, buffer } of excelBuffers) {
-    archive.append(buffer, { name });
-  }
-
-  await archive.finalize();
-  const zipBuffer = await zipBufferPromise;
-
-  console.log(`ZIP buffer ready: ${(zipBuffer.length / 1024 / 1024).toFixed(2)} MB`);
-
-  // Upload to GridFS
-  const fileId = await uploadFile(
-    Readable.from(zipBuffer),
-    {
-      filename: zipFileName,
-      contentType: 'application/zip',
-      metadata: { type: 'report', createdAt: new Date().toISOString() },
-    },
-  );
-
-  const fileSizeMB = (zipBuffer.length / 1024 / 1024).toFixed(2);
-  const fileSize = zipBuffer.length > 1024 * 1024
-    ? `${fileSizeMB} MB`
-    : `${(zipBuffer.length / 1024).toFixed(2)} KB`;
-
-  console.log(`✓ Uploaded to GridFS: ${fileId.toString()} (${fileSize})`);
-
-  return { fileId: fileId.toString(), fileSize };
+  console.log(`[${sheetType}] ✓ Streamed ${totalRows} rows`);
+  return totalRows;
 }
 
 // ─── Main Entry Point ────────────────────────────────────────────────
 
 /**
- * Generate the advanced report and store it in GridFS.
- * 
- * Sequence diagram flow:
- *   1. Fetch data from SQL Server (DB cursor, 10k chunks)
- *   2. Write Excel files to in-memory buffers
- *   3. Create ZIP archive
- *   4. Upload ZIP to GridFS (Blob Storage)
- *   5. Return fileId + downloadUrl
- * 
+ * Generate the advanced report with TRUE streaming:
+ *
+ *   DB → 10k chunk → Excel row writes → ZIP entry stream → GridFS upload stream
+ *
+ * At no point is the full dataset held in memory. Each 10k chunk is
+ * formatted and committed to the Excel streaming writer, which pushes
+ * bytes through the ZIP archiver into GridFS.
+ *
  * @param startDate  Report start date (ISO string)
  * @param endDate    Report end date (ISO string)
  * @param sheets     Selected sheet types
@@ -554,7 +479,7 @@ export async function generateReportToGridFS(
   onProgress?: ProgressCallback,
 ): Promise<GridFSReportResult> {
   const startTime = Date.now();
-  console.log('=== Starting GridFS Report Generation ===');
+  console.log('=== Starting GridFS Report Generation (TRUE STREAMING) ===');
   console.log('Date Range:', { startDate, endDate });
 
   const selectedSheets = sheets && sheets.length > 0
@@ -566,122 +491,128 @@ export async function generateReportToGridFS(
   const ExcelJSModule = await import('exceljs');
   const ExcelJS = (ExcelJSModule as any).default ?? ExcelJSModule;
 
-  // ─── Phase 1: Fetch data from SQL Server ───────────────────────
-  await onProgress?.(5, 'fetching_data', {
-    message: 'Fetching data from database...',
-  });
-
-  console.log('\n--- Phase 1: Fetching data ---');
-  const fetchStartTime = Date.now();
-
-  const dataFetches: Record<string, Promise<any[]>> = {};
-  if (selectedSheets.includes('videos')) {
-    dataFetches.videos = fetchAllData('videos', startDate, endDate);
-  }
-  if (selectedSheets.includes('transcriptions')) {
-    dataFetches.transcriptions = fetchAllData('transcriptions', startDate, endDate);
-  }
-  if (selectedSheets.includes('showreels')) {
-    dataFetches.showreels = fetchAllData('showreels', startDate, endDate);
-  }
-  if (selectedSheets.includes('redactions')) {
-    dataFetches.redactions = fetchAllData('redactions', startDate, endDate);
-  }
-
-  const fetchedData = await Promise.all(Object.values(dataFetches));
-  const dataResults: Record<string, any[]> = {};
-  let idx = 0;
-  for (const key of Object.keys(dataFetches)) {
-    dataResults[key] = fetchedData[idx++];
-  }
-
-  const totalRecords =
-    (dataResults.videos?.length || 0) +
-    (dataResults.transcriptions?.length || 0) +
-    (dataResults.showreels?.length || 0) +
-    (dataResults.redactions?.length || 0);
-
-  const fetchDuration = ((Date.now() - fetchStartTime) / 1000).toFixed(2);
-  console.log(`✓ All data fetched in ${fetchDuration}s (${totalRecords} total records)`);
-
-  await onProgress?.(30, 'fetching_data', {
-    message: `Fetched ${totalRecords} records from database`,
-    totalRows: totalRecords,
-  });
-
-  // ─── Phase 2: Write Excel files to memory buffers ──────────────
-  await onProgress?.(35, 'streaming_data', {
-    message: 'Creating Excel files...',
-    totalRows: totalRecords,
-  });
-
-  console.log('\n--- Phase 2: Creating Excel buffers ---');
-  const writeStartTime = Date.now();
+  // ─── Set up streaming pipeline: archiver → GridFS upload stream ──
   const dateRange = `${startDate.replace(/-/g, '')}_to_${endDate.replace(/-/g, '')}`;
-
-  const excelBuffers: { name: string; buffer: Buffer }[] = [];
-  let sheetsCompleted = 0;
-
-  for (const sheetType of selectedSheets) {
-    const data = dataResults[sheetType] || [];
-    const sheetName = SHEET_NAMES[sheetType] || sheetType;
-    const formatter = FORMATTERS[sheetType];
-    const fileName = `${sheetName.replace(/\s+/g, '_')}_${dateRange}.xlsx`;
-
-    if (!formatter) {
-      console.warn(`No formatter for sheet type: ${sheetType}`);
-      continue;
-    }
-
-    const buffer = await writeExcelToBuffer(ExcelJS, sheetName, data, formatter);
-    excelBuffers.push({ name: fileName, buffer });
-
-    sheetsCompleted++;
-    const sheetProgress = 35 + Math.round((sheetsCompleted / selectedSheets.length) * 40);
-    await onProgress?.(sheetProgress, 'streaming_data', {
-      currentSheet: sheetName,
-      rowsProcessed: data.length,
-      totalRows: totalRecords,
-      message: `Completed ${sheetName} (${data.length} rows)`,
-    });
-  }
-
-  const writeDuration = ((Date.now() - writeStartTime) / 1000).toFixed(2);
-  console.log(`✓ Excel buffers created in ${writeDuration}s`);
-
-  // ─── Phase 3: ZIP + Upload to GridFS ───────────────────────────
-  await onProgress?.(80, 'uploading', {
-    message: 'Creating ZIP and uploading to storage...',
-    totalRows: totalRecords,
-  });
-
-  console.log('\n--- Phase 3: ZIP + GridFS upload ---');
   const timestamp = Date.now();
   const zipFileName = `Advanced_Report_${dateRange}_${timestamp}.zip`;
 
-  const { fileId, fileSize } = await createZipAndUploadToGridFS(
-    excelBuffers,
-    zipFileName,
-  );
+  const { stream: gridfsWriteStream, fileId } = await getUploadStream({
+    filename: zipFileName,
+    contentType: 'application/zip',
+    metadata: { type: 'report', createdAt: new Date().toISOString() },
+  });
+
+  // archiver → GridFS
+  const archive = archiver('zip', { zlib: { level: 6 } });
+  archive.pipe(gridfsWriteStream as NodeJS.WritableStream);
+
+  // Track total bytes written via GridFS 'finish' event
+  const uploadFinished = new Promise<void>((resolve, reject) => {
+    (gridfsWriteStream as NodeJS.WritableStream).on('finish', resolve);
+    (gridfsWriteStream as NodeJS.WritableStream).on('error', reject);
+    archive.on('error', reject);
+  });
+
+  await onProgress?.(5, 'streaming_data', {
+    message: 'Starting streaming pipeline...',
+  });
+
+  // ─── Process each sheet sequentially ──────────────────────────────
+  let totalRecords = 0;
+  let sheetsCompleted = 0;
+
+  for (const sheetType of selectedSheets) {
+    const sheetName = SHEET_NAMES[sheetType] || sheetType;
+    const formatter = FORMATTERS[sheetType];
+
+    if (!formatter) {
+      console.warn(`No formatter for sheet type: ${sheetType}, skipping.`);
+      continue;
+    }
+
+    const excelFileName = `${sheetName.replace(/\s+/g, '_')}_${dateRange}.xlsx`;
+
+    await onProgress?.(
+      5 + Math.round((sheetsCompleted / selectedSheets.length) * 80),
+      'streaming_data',
+      {
+        currentSheet: sheetName,
+        rowsProcessed: totalRecords,
+        message: `Processing ${sheetName}...`,
+      },
+    );
+
+    // Create a PassThrough that the ExcelJS writer will write into.
+    // We append this PassThrough to the archiver so bytes flow through
+    // immediately as the writer produces them.
+    const excelPassThrough = new PassThrough();
+    archive.append(excelPassThrough, { name: excelFileName });
+
+    const sheetRows = await streamSheetToExcel(
+      ExcelJS,
+      excelPassThrough,
+      sheetType,
+      sheetName,
+      startDate,
+      endDate,
+      formatter,
+      (rowsSoFar) => {
+        // Granular progress while streaming rows
+        const sheetBase = 5 + Math.round((sheetsCompleted / selectedSheets.length) * 80);
+        const sheetSlice = Math.round((1 / selectedSheets.length) * 80);
+        // We don't know total rows upfront, so approximate within the slice
+        const estimated = Math.min(rowsSoFar / 100000, 0.95); // cap at 95% of slice
+        const progress = sheetBase + Math.round(estimated * sheetSlice);
+        onProgress?.(progress, 'streaming_data', {
+          currentSheet: sheetName,
+          rowsProcessed: totalRecords + rowsSoFar,
+          message: `${sheetName}: ${rowsSoFar.toLocaleString()} rows streamed...`,
+        });
+      },
+    );
+
+    totalRecords += sheetRows;
+    sheetsCompleted++;
+
+    console.log(`[${sheetType}] ✓ ${sheetRows} rows → archive entry "${excelFileName}"`);
+  }
+
+  // ─── Finalize archive → flush to GridFS ────────────────────────────
+  await onProgress?.(90, 'uploading', {
+    message: 'Finalizing ZIP and flushing to storage...',
+    rowsProcessed: totalRecords,
+    totalRows: totalRecords,
+  });
+
+  await archive.finalize();
+  await uploadFinished;
+
+  // Read file size from GridFS metadata
+  const { getFileInfo } = await import('./gridfs');
+  const info = await getFileInfo(fileId.toString());
+  const sizeBytes = info?.size ?? 0;
+  const fileSize = sizeBytes > 1024 * 1024
+    ? `${(sizeBytes / 1024 / 1024).toFixed(2)} MB`
+    : `${(sizeBytes / 1024).toFixed(2)} KB`;
 
   await onProgress?.(95, 'finalizing', {
-    message: 'Finalizing report...',
+    message: 'Report complete!',
     totalRows: totalRecords,
   });
 
   const totalDuration = ((Date.now() - startTime) / 1000).toFixed(2);
-  console.log('\n=== GridFS Report Generation Complete ===');
+  console.log('\n=== GridFS Report Generation Complete (TRUE STREAMING) ===');
   console.log(`Total Time: ${totalDuration}s`);
   console.log('Summary:', {
     zipFileName,
-    fileId,
+    fileId: fileId.toString(),
     fileSize,
     totalRecords,
-    sheetsCreated: excelBuffers.length,
+    sheetsCreated: sheetsCompleted,
   });
 
   return {
-    fileId,
+    fileId: fileId.toString(),
     fileName: zipFileName,
     fileSize,
     recordCount: totalRecords,
