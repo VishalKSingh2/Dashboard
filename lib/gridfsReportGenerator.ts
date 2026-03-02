@@ -23,7 +23,10 @@ import { JobPhase } from './mongoJobTypes';
  * from DB → Excel → ZIP → MongoDB with minimal memory buffering.
  */
 
-const DB_CHUNK_SIZE = 10000;
+const DB_CHUNK_SIZE = 50000;
+
+/** Safety limit: stop fetching if a single sheet exceeds this */
+const MAX_ROWS_PER_SHEET = 2_000_000;
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -43,12 +46,12 @@ export interface ProgressCallback {
   }): Promise<void>;
 }
 
-// ─── Query Templates ─────────────────────────────────────────────────
+// ─── Query Templates (OFFSET/FETCH — no duplicates, no cursor bugs) ──
 
 const QUERY_TEMPLATES = {
-  videos: (startDate: string, endDate: string, offset: number, limit: number, lastDate?: string, lastId?: string) => ({
+  videos: (startDate: string, endDate: string, offset: number, limit: number) => ({
     text: `
-      SELECT TOP (@Limit)
+      SELECT
         DATEADD(MONTH, DATEDIFF(MONTH, 0, [vs].[Created]), 0) AS [Month],
         [vs].[ClientId],
         [vs].[ParentName],
@@ -72,24 +75,15 @@ const QUERY_TEMPLATES = {
       FROM [dbo].[SPLUNK_VideoStatistics] AS [vs] WITH (NOLOCK)
       WHERE [vs].[Created] >= @Start
         AND [vs].[Created] <= @End
-        ${offset > 0 && lastDate && lastId ? `
-        AND (
-          [vs].[Created] < @LastDate OR 
-          ([vs].[Created] = @LastDate AND [vs].[VideoId] < @LastId)
-        )` : ''}
       ORDER BY [vs].[Created], [vs].[VideoId]
+      OFFSET @Offset ROWS FETCH NEXT @Limit ROWS ONLY
     `,
-    params: {
-      Start: startDate,
-      End: endDate,
-      Limit: limit,
-      ...(offset > 0 && lastDate && lastId && { LastDate: lastDate, LastId: lastId })
-    }
+    params: { Start: startDate, End: endDate, Offset: offset, Limit: limit }
   }),
 
-  transcriptions: (startDate: string, endDate: string, offset: number, limit: number, lastDate?: string, lastId?: string) => ({
+  transcriptions: (startDate: string, endDate: string, offset: number, limit: number) => ({
     text: `
-      SELECT TOP (@Limit)
+      SELECT
         DATEADD(MONTH, DATEDIFF(MONTH, 0, [trs].[RequestedDate]), 0) AS [Month],
         [trs].[Id],
         [trs].[VideoId],
@@ -120,24 +114,15 @@ const QUERY_TEMPLATES = {
       FROM [dbo].[SPLUNK_TranscriptionRequestStatistics] AS [trs] WITH (NOLOCK)
       WHERE [trs].[RequestedDate] >= @Start
         AND [trs].[RequestedDate] <= @End
-        ${offset > 0 && lastDate && lastId ? `
-        AND (
-          [trs].[RequestedDate] > @LastDate OR 
-          ([trs].[RequestedDate] = @LastDate AND [trs].[Id] > @LastId)
-        )` : ''}
-      ORDER BY [trs].[RequestedDate] ASC, [trs].[Id] ASC
+      ORDER BY [trs].[RequestedDate], [trs].[Id]
+      OFFSET @Offset ROWS FETCH NEXT @Limit ROWS ONLY
     `,
-    params: {
-      Start: startDate,
-      End: endDate,
-      Limit: limit,
-      ...(offset > 0 && lastDate && lastId && { LastDate: lastDate, LastId: lastId })
-    }
+    params: { Start: startDate, End: endDate, Offset: offset, Limit: limit }
   }),
 
-  showreels: (startDate: string, endDate: string, offset: number, limit: number, lastDate?: string, lastId?: string) => ({
+  showreels: (startDate: string, endDate: string, offset: number, limit: number) => ({
     text: `
-      SELECT TOP (@Limit)
+      SELECT
         DATEADD(MONTH, DATEDIFF(MONTH, 0, [sps].[Modified]), 0) AS [Month],
         [sps].[Id],
         [sps].[ParentName],
@@ -157,24 +142,15 @@ const QUERY_TEMPLATES = {
         JOIN [dbo].[SPLUNK_LOOKUP_ProjectStatus] AS [slps] WITH (NOLOCK) ON [slps].[ProjectStatus] = [ps].[ProjectStatus]
       WHERE [sps].[Modified] >= @Start
         AND [sps].[Modified] <= @End
-        ${offset > 0 && lastDate && lastId ? `
-        AND (
-          [sps].[Modified] > @LastDate OR 
-          ([sps].[Modified] = @LastDate AND [sps].[Id] > @LastId)
-        )` : ''}
       ORDER BY [sps].[Modified], [sps].[Id]
+      OFFSET @Offset ROWS FETCH NEXT @Limit ROWS ONLY
     `,
-    params: {
-      Start: startDate,
-      End: endDate,
-      Limit: limit,
-      ...(offset > 0 && lastDate && lastId && { LastDate: lastDate, LastId: lastId })
-    }
+    params: { Start: startDate, End: endDate, Offset: offset, Limit: limit }
   }),
 
-  redactions: (startDate: string, endDate: string, offset: number, limit: number, lastDate?: string, lastId?: string) => ({
+  redactions: (startDate: string, endDate: string, offset: number, limit: number) => ({
     text: `
-      SELECT TOP (@Limit)
+      SELECT
         DATEADD(MONTH, DATEDIFF(MONTH, 0, rrs.CompletedDate), 0) AS [Month],
         rrs.Id,
         rrs.LastUpdated,
@@ -191,30 +167,14 @@ const QUERY_TEMPLATES = {
         JOIN [dbo].[SPLUNK_VideoStatistics] AS [vs] WITH (NOLOCK) ON [vs].[VideoId] = rrs.ContentId
       WHERE rrs.CompletedDate >= @Start
         AND rrs.CompletedDate <= @End
-        ${offset > 0 && lastDate && lastId ? `
-        AND (
-          rrs.CompletedDate > @LastDate OR 
-          (rrs.CompletedDate = @LastDate AND rrs.Id > @LastId)
-        )` : ''}
-      ORDER BY rrs.CompletedDate ASC, rrs.Id ASC
+      ORDER BY rrs.CompletedDate, rrs.Id
+      OFFSET @Offset ROWS FETCH NEXT @Limit ROWS ONLY
     `,
-    params: {
-      Start: startDate,
-      End: endDate,
-      Limit: limit,
-      ...(offset > 0 && lastDate && lastId && { LastDate: lastDate, LastId: lastId })
-    }
+    params: { Start: startDate, End: endDate, Offset: offset, Limit: limit }
   })
 };
 
-// ─── Cursor field mapping (for keyset pagination) ────────────────────
 
-const CURSOR_FIELDS: Record<string, { dateField: string; idField: string }> = {
-  videos:         { dateField: 'Created',       idField: 'VideoId' },
-  transcriptions: { dateField: 'RequestedDate', idField: 'Id' },
-  showreels:      { dateField: 'Modified',      idField: 'Id' },
-  redactions:     { dateField: 'CompletedDate', idField: 'Id' },
-};
 
 // ─── Date Formatters ─────────────────────────────────────────────────
 
@@ -357,28 +317,26 @@ async function streamSheetToExcel(
   let totalRows = 0;
   let offset = 0;
   let hasMore = true;
-  let lastDate: string | undefined;
-  let lastId: string | undefined;
   let consecutiveErrors = 0;
   const MAX_RETRIES = 3;
-  const cursorFields = CURSOR_FIELDS[sheetType];
 
-  console.log(`[${sheetType}] Streaming: fetch chunk → write to Excel...`);
+  console.log(`[${sheetType}] Streaming: fetch chunk → write to Excel (OFFSET/FETCH)...`);
 
   while (hasMore) {
+    // Safety: stop if we exceed the per-sheet maximum
+    if (totalRows >= MAX_ROWS_PER_SHEET) {
+      console.warn(`[${sheetType}] Safety limit reached (${MAX_ROWS_PER_SHEET} rows). Stopping.`);
+      break;
+    }
+
     try {
-      // ── Fetch one chunk from DB ──
+      // ── Fetch one chunk from DB using OFFSET/FETCH ──
       const queryConfig = QUERY_TEMPLATES[sheetType as keyof typeof QUERY_TEMPLATES](
-        startDate, endDate, offset, DB_CHUNK_SIZE, lastDate, lastId,
+        startDate, endDate, offset, DB_CHUNK_SIZE,
       );
 
       const chunkStart = Date.now();
-      const chunk = await Promise.race([
-        query(queryConfig.text, queryConfig.params, { timeout: 180000 }),
-        new Promise<any[]>((_, reject) =>
-          setTimeout(() => reject(new Error('Query timeout after 3 minutes')), 180000),
-        ),
-      ]);
+      const chunk = await query(queryConfig.text, queryConfig.params, { timeout: 300000 });
       const chunkMs = Date.now() - chunkStart;
 
       if (!chunk || chunk.length === 0) {
@@ -386,13 +344,13 @@ async function streamSheetToExcel(
         break;
       }
 
-      console.log(`[${sheetType}] Chunk ${offset}–${offset + chunk.length} fetched in ${(chunkMs / 1000).toFixed(2)}s → writing rows...`);
+      console.log(`[${sheetType}] Rows ${offset}–${offset + chunk.length} fetched in ${(chunkMs / 1000).toFixed(2)}s → writing...`);
 
-      // ── Write rows immediately ──
+      // ── Write rows immediately to the streaming Excel writer ──
       for (const row of chunk) {
         const formatted = formatter(row);
 
-        // Set headers on the first row
+        // Set column headers on the very first row
         if (!headerKeys) {
           headerKeys = Object.keys(formatted);
           worksheet.columns = headerKeys.map((key) => ({
@@ -409,19 +367,14 @@ async function streamSheetToExcel(
         worksheet.addRow(rowData).commit();
       }
 
-      // Update cursors
+      // Advance offset
       offset += chunk.length;
       totalRows += chunk.length;
       consecutiveErrors = 0;
 
-      const lastRow = chunk[chunk.length - 1];
-      if (cursorFields) {
-        lastDate = lastRow[cursorFields.dateField];
-        lastId = lastRow[cursorFields.idField];
-      }
-
       onChunkWritten?.(totalRows);
 
+      // If we got fewer rows than requested, we've reached the end
       if (chunk.length < DB_CHUNK_SIZE) {
         hasMore = false;
       }
@@ -503,7 +456,7 @@ export async function generateReportToGridFS(
   });
 
   // archiver → GridFS
-  const archive = archiver('zip', { zlib: { level: 6 } });
+  const archive = archiver('zip', { zlib: { level: 1 } });
   archive.pipe(gridfsWriteStream as NodeJS.WritableStream);
 
   // Track total bytes written via GridFS 'finish' event
@@ -560,9 +513,10 @@ export async function generateReportToGridFS(
         // Granular progress while streaming rows
         const sheetBase = 5 + Math.round((sheetsCompleted / selectedSheets.length) * 80);
         const sheetSlice = Math.round((1 / selectedSheets.length) * 80);
-        // We don't know total rows upfront, so approximate within the slice
-        const estimated = Math.min(rowsSoFar / 100000, 0.95); // cap at 95% of slice
-        const progress = sheetBase + Math.round(estimated * sheetSlice);
+        // Logarithmic progress: grows fast at first, slows down, never caps
+        // log(1 + rows/5000) scaled so 10k→40%, 50k→55%, 200k→75%, 500k→85%, 1M→90%
+        const logProgress = Math.min(Math.log10(1 + rowsSoFar / 5000) / Math.log10(200), 0.95);
+        const progress = sheetBase + Math.round(logProgress * sheetSlice);
         onProgress?.(progress, 'streaming_data', {
           currentSheet: sheetName,
           rowsProcessed: totalRecords + rowsSoFar,

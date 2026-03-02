@@ -5,6 +5,7 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import { DashboardData, DashboardFilters } from '@/lib/types';
 import DashboardHeader from './components/DashboardHeader';
 import MetricsGrid from './components/MetricsGrid';
+import ReportJobsPanel from '@/components/ui/ReportJobsPanel';
 import LazyChart from '@/components/ui/LazyChart';
 // Dynamic imports for better code splitting
 import {
@@ -147,6 +148,9 @@ export default function DashboardPage() {
           </div>
         )}
       </div>
+
+      {/* Persistent jobs panel — survives page reloads */}
+      <ReportJobsPanel />
     </div>
   );
 }

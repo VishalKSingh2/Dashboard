@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
-  getPendingJobs,
-  startProcessing,
+  claimNextPendingJob,
   completeJob,
   failJob,
   updateProgress,
@@ -15,31 +14,16 @@ export const maxDuration = 300; // 5 minutes max execution time
 
 /**
  * POST /api/process-jobs
- * 
- * Worker endpoint — picks up pending jobs from MongoDB,
- * generates reports streamed into GridFS, and sends email notifications.
- * 
- * Sequence diagram flow:
- *   Worker picks pending job → Update status "processing"
- *   → Fetch chunks from DB → Write Excel → Stream to GridFS
- *   → Update status "completed" + downloadUrl
- *   → Send email notification
+ *
+ * Worker endpoint — atomically claims pending jobs from MongoDB one at a time,
+ * generates reports streamed into GridFS.
+ *
+ * Uses MongoDB findOneAndUpdate for atomic job claiming, so multiple
+ * concurrent calls are safe — no in-memory lock needed.
  */
-
-// Simple in-memory lock to prevent concurrent processing
-let isProcessing = false;
 
 export async function POST(request: NextRequest) {
   try {
-    // Prevent concurrent processing
-    if (isProcessing) {
-      return NextResponse.json({
-        message: 'Job processing already in progress',
-      });
-    }
-
-    isProcessing = true;
-
     // Cleanup expired jobs + their GridFS files
     console.log('Cleaning up expired jobs...');
     try {
@@ -52,25 +36,22 @@ export async function POST(request: NextRequest) {
       console.warn('Cleanup warning (non-fatal):', cleanupErr);
     }
 
-    // Get pending jobs from MongoDB
-    const pendingJobs = await getPendingJobs();
-    console.log(`Found ${pendingJobs.length} pending jobs`);
+    // Atomically claim and process jobs one at a time until none remain.
+    // claimNextPendingJob uses findOneAndUpdate so concurrent callers
+    // never claim the same job — no in-memory lock required.
+    let totalProcessed = 0;
 
-    if (pendingJobs.length === 0) {
-      isProcessing = false;
-      return NextResponse.json({
-        message: 'No pending jobs to process',
-      });
-    }
+    while (true) {
+      const job = await claimNextPendingJob();
 
-    // Process each job sequentially
-    for (const job of pendingJobs) {
-      console.log(`Processing job ${job.jobId}`);
+      if (!job) {
+        console.log('No more pending jobs to process');
+        break;
+      }
+
+      console.log(`Claimed job ${job.jobId} — processing...`);
 
       try {
-        // Mark as processing in MongoDB
-        await startProcessing(job.jobId);
-
         // Generate report → stream to GridFS
         const startTime = Date.now();
         const result = await generateReportToGridFS(
@@ -108,17 +89,20 @@ export async function POST(request: NextRequest) {
         // Mark job failed in MongoDB
         await failJob(job.jobId, errorMessage);
       }
+
+      totalProcessed++;
     }
 
-    isProcessing = false;
+    if (totalProcessed === 0) {
+      return NextResponse.json({ message: 'No pending jobs to process' });
+    }
 
     return NextResponse.json({
       success: true,
-      message: `Processed ${pendingJobs.length} jobs`,
-      processedCount: pendingJobs.length,
+      message: `Processed ${totalProcessed} jobs`,
+      processedCount: totalProcessed,
     });
   } catch (error) {
-    isProcessing = false;
     console.error('Job processing error:', error);
 
     return NextResponse.json(

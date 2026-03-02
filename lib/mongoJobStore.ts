@@ -185,6 +185,29 @@ export async function startProcessing(jobId: string): Promise<ReportJobDocument 
 }
 
 /**
+ * Atomically claim the next pending job (FIFO).
+ * Uses findOneAndUpdate so concurrent callers never claim the same job.
+ * Returns null when no pending jobs remain.
+ */
+export async function claimNextPendingJob(): Promise<ReportJobDocument | null> {
+  await ensureIndexes();
+  const collection = await getJobsCollection();
+  const result = await collection.findOneAndUpdate(
+    { status: 'pending' },
+    {
+      $set: {
+        status: 'processing',
+        phase: 'initializing',
+        progress: 0,
+        startedAt: new Date(),
+      },
+    },
+    { sort: { createdAt: 1 }, returnDocument: 'after' },
+  );
+  return result ?? null;
+}
+
+/**
  * Update job progress during processing.
  * Called by the worker after each chunk is processed.
  */
