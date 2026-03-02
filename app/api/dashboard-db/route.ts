@@ -27,10 +27,6 @@ export async function GET(request: NextRequest) {
     const parsedStartDate = filters.startDate ? new Date(filters.startDate) : defaultStart;
     const effectiveEndDate = !isNaN(parsedEndDate.getTime()) && parsedEndDate < latestDate ? parsedEndDate : latestDate;
     const effectiveStartDate = !isNaN(parsedStartDate.getTime()) ? parsedStartDate : defaultStart;
-    const rawActiveUserStart = subDays(effectiveEndDate, 30);
-    const activeUserStartDate = rawActiveUserStart > effectiveStartDate ? rawActiveUserStart : effectiveStartDate;
-    const activeUsersStartFormatted = format(activeUserStartDate, 'yyyy-MM-dd');
-    const activeUsersEndFormatted = format(effectiveEndDate, 'yyyy-MM-dd');
 
     console.log('Dashboard DB API - Filters:', filters);
     console.log('Dashboard DB API - Granularity:', granularity);
@@ -86,28 +82,8 @@ export async function GET(request: NextRequest) {
         JOIN [dbo].[SPLUNK_LOOKUP_ProjectStatus] AS [slps] WITH (NOLOCK) ON [slps].[ProjectStatus] = [ps].[ProjectStatus]
       WHERE ${showreelWhereClause}
     `;
-    
-    // Query for active users with optional customer filter (Optimized)
-    const activeUsersWhereConditions: string[] = [
-      'us.LastLogin >= @activeUserStartDate',
-      'us.LastLogin < DATEADD(day, 1, @activeUserEndDate)',
-      'us.IsActive = 1'
-    ];
-    
-    if (filters.customerType !== 'all') {
-      activeUsersWhereConditions.push('c.Id = @customerId');
-    }
-    
-    const activeUsersQuery = `
-      SELECT COUNT(DISTINCT us.Email) as activeUsers
-      FROM UserStatistics us WITH (NOLOCK)
-      INNER JOIN ClientUserRoles cur WITH (NOLOCK) ON us.Id = cur.UserId
-      INNER JOIN ClientOverview co WITH (NOLOCK) ON cur.ClientId = co.Id
-      INNER JOIN Customer c WITH (NOLOCK) ON co.CustomerId = c.Id
-      WHERE ${activeUsersWhereConditions.join(' AND ')}
-    `;
 
-    const [metrics, showreelsResult, activeUsersResult] = await Promise.all([
+    const [metrics, showreelsResult] = await Promise.all([
       query(metricsQuery, {
         startDate: filters.startDate,
         endDate: filters.endDate,
@@ -118,11 +94,6 @@ export async function GET(request: NextRequest) {
         startDate: filters.startDate,
         endDate: filters.endDate,
         customerType: filters.customerType,
-      }),
-      query(activeUsersQuery, {
-        customerId: filters.customerType,
-        activeUserStartDate: activeUsersStartFormatted,
-        activeUserEndDate: activeUsersEndFormatted,
       })
     ]);
 
@@ -233,46 +204,6 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // Query 5: Get active users with customer and client information - Optimized
-    const usersWhereConditions: string[] = [
-      'us.LastLogin >= @activeUserStartDate',
-      'us.LastLogin < DATEADD(day, 1, @activeUserEndDate)',
-      'us.IsActive = 1'
-    ];
-    
-    if (filters.customerType !== 'all') {
-      usersWhereConditions.push(`c.Id = @customerId`);
-    }
-    
-    const usersWhereClause = `WHERE ${usersWhereConditions.join(' AND ')}`;
-
-    // Limit users to reduce payload size - get top 50 most recent only
-    const userLimit = granularity === 'detailed' ? 100 : 50;
-    
-    const usersQuery = `
-      SELECT TOP ${userLimit}
-        us.Email,
-        c.Name as CustomerName,
-        co.Name as ClientName,
-        us.LastLogin,
-        CASE 
-          WHEN us.IsActive = 1 THEN 'Enabled'
-          WHEN us.IsActive = 0 THEN 'Disabled'
-        END as IsActive
-      FROM [dbo].[ClientUserRoles] cur WITH (NOLOCK)
-      INNER JOIN [dbo].[ClientOverview] co WITH (NOLOCK) ON cur.ClientId = co.Id
-      INNER JOIN [dbo].[Customer] c WITH (NOLOCK) ON co.CustomerId = c.Id
-      INNER JOIN [dbo].[UserStatistics] us WITH (NOLOCK) ON cur.UserId = us.Id
-      ${usersWhereClause}
-      ORDER BY us.LastLogin DESC
-    `;
-
-    const activeUsers = await query(usersQuery, {
-      customerId: filters.customerType,
-      activeUserStartDate: activeUsersStartFormatted,
-      activeUserEndDate: activeUsersEndFormatted,
-    });
-
     // Calculate previous period for comparison
     const startDate = new Date(filters.startDate);
     const endDate = new Date(filters.endDate);
@@ -314,7 +245,6 @@ export async function GET(request: NextRequest) {
       totalAudio: prevMetrics[0]?.totalAudio || 0,
       avgViews: prevMetrics[0]?.avgViews || 0
     };
-    const activeUsersCount = activeUsersResult[0]?.activeUsers || 0;
 
     const calculateChange = (current: number, previous: number) => {
       // If no previous data but we have current data, show as 100% increase
@@ -363,10 +293,6 @@ export async function GET(request: NextRequest) {
         totalAudio: {
           count: currentMetrics.totalAudio || 0,
           changePercent: calculateChange(currentMetrics.totalAudio || 0, previousMetrics.totalAudio || 0),
-        },
-        activeUsers: {
-          count: activeUsersCount,
-          status: 'stable',
         },
         avgViewsPerMedia: {
           average: Math.round((currentMetrics.avgViews || 0) * 10) / 10,
@@ -421,28 +347,6 @@ export async function GET(request: NextRequest) {
         name: row.name || 'Unknown',
         hours: Math.round((row.hours || 0) * 100) / 100,
       })),
-      activeUsers: activeUsers.map((row: any, index: number) => {
-        let lastLogin = activeUsersEndFormatted;
-        if (row.LastLogin) {
-          try {
-            const loginDate = new Date(row.LastLogin);
-            if (!isNaN(loginDate.getTime())) {
-              lastLogin = format(loginDate, 'yyyy-MM-dd');
-            }
-          } catch (error) {
-            console.warn('Invalid LastLogin date for user:', row.Email);
-          }
-        }
-        
-        return {
-          id: `user-${index + 1}`,
-          email: row.Email || 'Unknown',
-          customerName: row.CustomerName || 'Unknown',
-          clientName: row.ClientName || 'Unknown',
-          lastLogin,
-          isActive: row.IsActive || 'Disabled',
-        };
-      }),
     };
 
     console.log('Dashboard DB API - Data fetched successfully');

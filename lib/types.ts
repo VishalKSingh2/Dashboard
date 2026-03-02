@@ -15,10 +15,6 @@ export interface DashboardMetrics {
     count: number;
     changePercent: number;
   };
-  activeUsers: {
-    count: number;
-    status: 'stable' | 'increase' | 'decrease';
-  };
   avgViewsPerMedia: {
     average: number;
     engagementPercent: number;
@@ -62,22 +58,12 @@ export interface DashboardFilters {
   endDate: string;
 }
 
-export interface ActiveUserData {
-  id: string;
-  email: string;
-  customerName: string;
-  clientName: string;
-  lastLogin: string; // ISO date string (YYYY-MM-DD)
-  isActive: string; // 'Enabled' or 'Disabled'
-}
-
 export interface DashboardData {
   metrics: DashboardMetrics;
   mediaUploads: MediaUploadData[];
   mediaHours: MediaHoursData[];
   mediaTypes: MediaTypeData[];
   topChannels: ChannelData[];
-  activeUsers: ActiveUserData[];
 }
 
 export type ReportSheetType = 'videos' | 'transcriptions' | 'showreels' | 'redactions';

@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Link from 'next/link';
+import { ClipboardList } from 'lucide-react';
 import { DashboardData, DashboardFilters } from '@/lib/types';
 import Select from '@/components/ui/Select';
 import SearchableSelect from '@/components/ui/SearchableSelect';
@@ -118,6 +120,13 @@ export default function DashboardHeader({
             <AdvancedDownloadButton filters={filters}/>
           </>
         )}
+        <Link
+          href="/report-jobs"
+          className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-purple-700 bg-purple-50 border border-purple-200 rounded-lg hover:bg-purple-100 transition-colors"
+        >
+          <ClipboardList className="w-4 h-4" />
+          Report Jobs
+        </Link>
       </div>
     </div>
   );

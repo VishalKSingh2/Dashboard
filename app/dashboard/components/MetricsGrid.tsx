@@ -9,7 +9,7 @@ interface MetricsGridProps {
 
 export default function MetricsGrid({ metrics, loading }: MetricsGridProps) {
   return (
-    <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
+    <div className="grid grid-rows-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
       <MetricCard
         title="Total Videos Uploaded"
         value={formatNumber(metrics.totalVideos.count)}
@@ -49,17 +49,6 @@ export default function MetricsGrid({ metrics, loading }: MetricsGridProps) {
         change={{
           value: metrics.totalAudio.changePercent,
           type: metrics.totalAudio.changePercent > 0 ? 'increase' : metrics.totalAudio.changePercent < 0 ? 'decrease' : 'stable',
-          label: 'vs previous period',
-        }}
-        loading={loading}
-      />
-
-      <MetricCard
-        title="Active Users (30d)"
-        value={formatNumber(metrics.activeUsers.count)}
-        change={{
-          value: 0,
-          type: metrics.activeUsers.status,
           label: 'vs previous period',
         }}
         loading={loading}

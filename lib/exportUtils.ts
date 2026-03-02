@@ -63,7 +63,6 @@ export async function exportToExcel(data: DashboardData, filters: DashboardFilte
         const metricsVideos = metrics.totalVideos || { count: 0, changePercent: 0 };
         const metricsHours = metrics.totalHours || { hours: 0, changePercent: 0 };
         const metricsShowreels = metrics.totalShowreels || { count: 0, changePercent: 0 };
-        const metricsActiveUsers = metrics.activeUsers || { count: 0, status: 'stable' as const };
         const avgViewsPerMedia = metrics.avgViewsPerMedia || { average: 0, engagementPercent: 0 };
 
         const summaryData = [
@@ -93,15 +92,6 @@ export async function exportToExcel(data: DashboardData, filters: DashboardFilte
                 (metricsShowreels.count || 0) - calculatePreviousValue(metricsShowreels.count || 0, metricsShowreels.changePercent || 0),
                 `${metricsShowreels.changePercent || 0}%`,
                 (metricsShowreels.changePercent || 0) > 0 ? 'Increasing' : (metricsShowreels.changePercent || 0) < 0 ? 'Decreasing' : 'Stable',
-                'vs previous period'
-            ],
-            [
-                'Active Users (30d)',
-                metricsActiveUsers.count || 0,
-                metricsActiveUsers.count || 0,
-                0,
-                '0%',
-                'Stable',
                 'vs previous period'
             ],
             [
@@ -182,68 +172,7 @@ export async function exportToExcel(data: DashboardData, filters: DashboardFilte
         ws3['!cols'] = [{ wch: 12 }, { wch: 12 }, { wch: 8 }, { wch: 10 }, { wch: 12 }, { wch: 15 }, { wch: 10 }, { wch: 18 }, { wch: 18 }, { wch: 10 }];
         XLSX.utils.book_append_sheet(workbook, ws3, 'Daily_Upload_Data');
 
-        // Sheet 4: Active Users (Enhanced)
-        const userHeaders = ['Rank', 'User Name', 'Role', 'Uploads', 'Last Active', 'Days Since Active', 'Total Views', 'Avg Views/Upload', 'Contribution %', 'Status'];
-
-        const activeUsersList = data.activeUsers || [];
-        const totalUploads = activeUsersList.reduce((sum, user) => sum + (user.uploads || 0), 0);
-        const sortedUsers = [...activeUsersList].sort((a, b) => (b.uploads || 0) - (a.uploads || 0));
-
-        const userRows = sortedUsers.map((user, index) => {
-            const daysSinceActive = differenceInDays(new Date(), parseISO(user.lastActive));
-            const avgViewsPerUpload = (user.uploads || 0) > 0 ? ((user.totalViews || 0) / (user.uploads || 1)).toFixed(1) : '0';
-            const contribution = totalUploads > 0 ? (((user.uploads || 0) / totalUploads) * 100).toFixed(1) : '0';
-            const status = daysSinceActive <= 7 ? 'Very Active' : daysSinceActive <= 14 ? 'Active' : 'Moderate';
-
-            return [
-                index + 1,
-                user.user || 'Unknown',
-                user.role || 'User',
-                user.uploads || 0,
-                user.lastActive || '',
-                daysSinceActive,
-                user.totalViews || 0,
-                avgViewsPerUpload,
-                `${contribution}%`,
-                status
-            ];
-        });
-
-        // Add totals row
-        const totalViews = activeUsersList.reduce((sum: number, user) => sum + (user.totalViews || 0), 0);
-        const usersCount = activeUsersList.length || 1;
-        userRows.push([
-            '',
-            'TOTAL',
-            '',
-            totalUploads,
-            '',
-            '',
-            totalViews,
-            '',
-            '100%',
-            ''
-        ]);
-
-        // Add averages row
-        userRows.push([
-            '',
-            'AVERAGE',
-            '',
-            Math.round(totalUploads / usersCount * 10) / 10,
-            '',
-            '',
-            Math.round(totalViews / usersCount),
-            totalUploads > 0 ? Math.round(totalViews / totalUploads * 10) / 10 : 0,
-            '',
-            ''
-        ]);
-
-        const ws4 = XLSX.utils.aoa_to_sheet([userHeaders, ...userRows]);
-        ws4['!cols'] = [{ wch: 6 }, { wch: 18 }, { wch: 18 }, { wch: 10 }, { wch: 12 }, { wch: 16 }, { wch: 12 }, { wch: 16 }, { wch: 15 }, { wch: 12 }];
-        XLSX.utils.book_append_sheet(workbook, ws4, 'Active_Users');
-
-        // Sheet 5: Top Channels (Enhanced)
+        // Sheet 4: Top Channels (Enhanced)
         const channelHeaders = ['Rank', 'Channel Name', 'Hours', 'Percentage', 'Videos (Est.)', 'Showreels (Est.)', 'Avg Hours/Upload'];
         const topChannels = data.topChannels || [];
         const totalChannelHours = topChannels.reduce((sum, ch) => sum + (ch.hours || 0), 0);
@@ -279,11 +208,11 @@ export async function exportToExcel(data: DashboardData, filters: DashboardFilte
             ''
         ]);
 
-        const ws5 = XLSX.utils.aoa_to_sheet([channelHeaders, ...channelRows]);
-        ws5['!cols'] = [{ wch: 6 }, { wch: 30 }, { wch: 10 }, { wch: 12 }, { wch: 15 }, { wch: 18 }, { wch: 16 }];
-        XLSX.utils.book_append_sheet(workbook, ws5, 'Top_Channels');
+        const ws4 = XLSX.utils.aoa_to_sheet([channelHeaders, ...channelRows]);
+        ws4['!cols'] = [{ wch: 6 }, { wch: 30 }, { wch: 10 }, { wch: 12 }, { wch: 15 }, { wch: 18 }, { wch: 16 }];
+        XLSX.utils.book_append_sheet(workbook, ws4, 'Top_Channels');
 
-        // Sheet 6: Media Type Breakdown (Enhanced)
+        // Sheet 5: Media Type Breakdown (Enhanced)
         const mediaTypeHeaders = ['Rank', 'Media Type', 'Count', 'Percentage', 'Total Hours (Est.)', 'Avg Hours/Item', 'Total Views (Est.)', 'Avg Views/Item'];
         const mediaTypes = data.mediaTypes || [];
         const totalMediaCount = mediaTypes.reduce((sum, mt) => sum + (mt.value || 0), 0);
@@ -326,9 +255,9 @@ export async function exportToExcel(data: DashboardData, filters: DashboardFilte
             ''
         ]);
 
-        const ws6 = XLSX.utils.aoa_to_sheet([mediaTypeHeaders, ...mediaTypeRows]);
-        ws6['!cols'] = [{ wch: 6 }, { wch: 15 }, { wch: 10 }, { wch: 12 }, { wch: 18 }, { wch: 15 }, { wch: 18 }, { wch: 15 }];
-        XLSX.utils.book_append_sheet(workbook, ws6, 'Media_Types');
+        const ws5 = XLSX.utils.aoa_to_sheet([mediaTypeHeaders, ...mediaTypeRows]);
+        ws5['!cols'] = [{ wch: 6 }, { wch: 15 }, { wch: 10 }, { wch: 12 }, { wch: 18 }, { wch: 15 }, { wch: 18 }, { wch: 15 }];
+        XLSX.utils.book_append_sheet(workbook, ws5, 'Media_Types');
 
         // Generate filename - sanitize to remove invalid characters
         const sanitizedCustomer = filters.customerType.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -411,15 +340,7 @@ export async function exportToCSV(data: DashboardData, filters: DashboardFilters
             'vs_previous_period'
         ],
         [
-            'Active_Users_30d',
-            data.metrics.activeUsers.count,
-            data.metrics.activeUsers.count,
-            0,
-            0,
-            'stable',
-            'vs_previous_period'
-        ],
-        [
+
             'Avg_Views_per_Media',
             data.metrics.avgViewsPerMedia.average.toFixed(1),
             '-',
@@ -466,39 +387,7 @@ export async function exportToCSV(data: DashboardData, filters: DashboardFilters
             content: dailyData.map(row => row.join(',')).join('\n')
         });
 
-        // File 4: Active Users (Enhanced)
-        const activeUsers = data.activeUsers || [];
-        const totalUploads = activeUsers.reduce((sum, user) => sum + (user.uploads || 0), 0);
-        const sortedUsers = [...activeUsers].sort((a, b) => (b.uploads || 0) - (a.uploads || 0));
-
-        const userData = [
-            ['Rank', 'User_Name', 'Role', 'Uploads', 'Last_Active', 'Days_Since_Active', 'Total_Views', 'Avg_Views_per_Upload', 'Contribution_Percent', 'Status'],
-            ...sortedUsers.map((user, index) => {
-                const daysSinceActive = differenceInDays(new Date(), parseISO(user.lastActive));
-                const avgViewsPerUpload = (user.uploads || 0) > 0 ? ((user.totalViews || 0) / (user.uploads || 1)).toFixed(1) : '0';
-                const contribution = totalUploads > 0 ? (((user.uploads || 0) / totalUploads) * 100).toFixed(1) : '0';
-                const status = daysSinceActive <= 7 ? 'Very_Active' : daysSinceActive <= 14 ? 'Active' : 'Moderate';
-
-                return [
-                    index + 1,
-                    user.user || 'Unknown',
-                    user.role || 'User',
-                    user.uploads || 0,
-                    user.lastActive || '',
-                    daysSinceActive,
-                    user.totalViews || 0,
-                    avgViewsPerUpload,
-                    contribution,
-                    status
-                ];
-            })
-        ];
-        csvFiles.push({
-            name: 'active_users.csv',
-            content: userData.map(row => row.join(',')).join('\n')
-        });
-
-        // File 5: Top Channels (Enhanced)
+        // File 4: Top Channels (Enhanced)
         const topChannels = data.topChannels || [];
         const totalChannelHours = topChannels.reduce((sum, ch) => sum + (ch.hours || 0), 0);
 
@@ -528,7 +417,7 @@ export async function exportToCSV(data: DashboardData, filters: DashboardFilters
             content: channelData.map(row => row.join(',')).join('\n')
         });
 
-        // File 6: Media Type Breakdown (Enhanced)
+        // File 5: Media Type Breakdown (Enhanced)
         const mediaTypes = data.mediaTypes || [];
         const totalMediaCount = mediaTypes.reduce((sum, mt) => sum + (mt.value || 0), 0);
         const sortedMediaTypes = [...mediaTypes].sort((a, b) => (b.value || 0) - (a.value || 0));
