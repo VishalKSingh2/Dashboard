@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import Navbar from "./components/Navbar";
 
 export const metadata: Metadata = {
   title: "Report Analytics Dashboard",
@@ -15,13 +16,11 @@ export default function RootLayout({
   return (
     <html lang="en">
       <head>
-        {/* Preconnect to improve performance */}
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="dns-prefetch" href="https://fonts.googleapis.com" />
       </head>
-      <body
-        className="antialiased"
-      >
+      <body className="antialiased">
+        <Navbar />
         {children}
       </body>
     </html>

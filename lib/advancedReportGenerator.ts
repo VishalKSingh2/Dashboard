@@ -4,7 +4,7 @@ import fs from 'fs';
 import archiver from 'archiver';
 
 const BATCH_SIZE = 50000; // Write 50k records per batch to Excel
-const DB_CHUNK_SIZE = 10000; // Fetch 10k records per chunk (reduced for unindexed DB to avoid timeouts)
+const DB_CHUNK_SIZE = 50000; // Fetch 50k records per chunk (5x fewer round-trips; xlsx already compressed internally)
 
 interface ExcelGenerationResult {
 	fileName: string;
@@ -391,7 +391,7 @@ async function createZipFile(
 ): Promise<void> {
 	return new Promise((resolve, reject) => {
 		const output = fs.createWriteStream(zipPath);
-		const archive = archiver('zip', { zlib: { level: 9 } });
+		const archive = archiver('zip', { zlib: { level: 1 } }); // Level 1: xlsx is already compressed, level 9 wastes CPU for ~1% gain
 
 		output.on('close', () => {
 			console.log(`ZIP file created: ${zipPath} (${archive.pointer()} bytes)`);
