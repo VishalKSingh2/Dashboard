@@ -1,4 +1,4 @@
-import { query } from './db';
+import { queryStream } from './db';
 import { PassThrough } from 'stream';
 import archiver from 'archiver';
 import { getUploadStream } from './gridfs';
@@ -8,25 +8,24 @@ import { JobPhase } from './mongoJobTypes';
  * GridFS Report Generator — TRUE STREAMING
  *
  * Architecture (per sequence diagram):
- *   DB → fetch 10k chunk → write rows to Excel stream → pipe to ZIP → pipe to GridFS
+ *   DB (request.stream=true) → row-by-row → Excel stream → ZIP → GridFS
  *
  * Each sheet is processed one at a time:
  *   1. Open a streaming Excel writer pointing at a PassThrough
  *   2. The PassThrough is appended to the archiver (ZIP) as an entry
- *   3. Fetch 10k rows from SQL Server
- *   4. Format + commit rows immediately to the Excel stream
- *   5. Repeat step 3-4 until no more rows
- *   6. Commit the worksheet & finalize the workbook writer (closes the PassThrough)
- *   7. Move to next sheet
+ *   3. Execute a single unbounded SELECT with request.stream=true
+ *   4. For each row: format + commit to the Excel stream
+ *   5. Commit the worksheet & finalize the workbook writer (closes the PassThrough)
+ *   6. Move to next sheet
  *
  * The archiver pipes into the GridFS upload stream, so data flows
  * from DB → Excel → ZIP → MongoDB with minimal memory buffering.
+ *
+ * Sheets are split at 500K rows to stay within Excel's 1,048,576 limit.
  */
 
-const DB_CHUNK_SIZE = 50000;
-
-/** Safety limit: stop fetching if a single sheet exceeds this */
-const MAX_ROWS_PER_SHEET = 2_000_000;
+/** Excel hard limit is 1,048,576 rows; we split well below that */
+const MAX_ROWS_PER_SHEET = 500_000;
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -46,10 +45,10 @@ export interface ProgressCallback {
   }): Promise<void>;
 }
 
-// ─── Query Templates (OFFSET/FETCH — no duplicates, no cursor bugs) ──
+// ─── Streaming SQL queries (single unbounded SELECT — no OFFSET/FETCH) ──
 
-const QUERY_TEMPLATES = {
-  videos: (startDate: string, endDate: string, offset: number, limit: number) => ({
+const STREAMING_QUERIES: Record<string, (startDate: string, endDate: string) => { text: string; params: Record<string, any> }> = {
+  videos: (startDate, endDate) => ({
     text: `
       SELECT
         DATEADD(MONTH, DATEDIFF(MONTH, 0, [vs].[Created]), 0) AS [Month],
@@ -76,12 +75,11 @@ const QUERY_TEMPLATES = {
       WHERE [vs].[Created] >= @Start
         AND [vs].[Created] <= @End
       ORDER BY [vs].[Created], [vs].[VideoId]
-      OFFSET @Offset ROWS FETCH NEXT @Limit ROWS ONLY
     `,
-    params: { Start: startDate, End: endDate, Offset: offset, Limit: limit }
+    params: { Start: startDate, End: endDate },
   }),
 
-  transcriptions: (startDate: string, endDate: string, offset: number, limit: number) => ({
+  transcriptions: (startDate, endDate) => ({
     text: `
       SELECT
         DATEADD(MONTH, DATEDIFF(MONTH, 0, [trs].[RequestedDate]), 0) AS [Month],
@@ -115,12 +113,11 @@ const QUERY_TEMPLATES = {
       WHERE [trs].[RequestedDate] >= @Start
         AND [trs].[RequestedDate] <= @End
       ORDER BY [trs].[RequestedDate], [trs].[Id]
-      OFFSET @Offset ROWS FETCH NEXT @Limit ROWS ONLY
     `,
-    params: { Start: startDate, End: endDate, Offset: offset, Limit: limit }
+    params: { Start: startDate, End: endDate },
   }),
 
-  showreels: (startDate: string, endDate: string, offset: number, limit: number) => ({
+  showreels: (startDate, endDate) => ({
     text: `
       SELECT
         DATEADD(MONTH, DATEDIFF(MONTH, 0, [sps].[Modified]), 0) AS [Month],
@@ -143,12 +140,11 @@ const QUERY_TEMPLATES = {
       WHERE [sps].[Modified] >= @Start
         AND [sps].[Modified] <= @End
       ORDER BY [sps].[Modified], [sps].[Id]
-      OFFSET @Offset ROWS FETCH NEXT @Limit ROWS ONLY
     `,
-    params: { Start: startDate, End: endDate, Offset: offset, Limit: limit }
+    params: { Start: startDate, End: endDate },
   }),
 
-  redactions: (startDate: string, endDate: string, offset: number, limit: number) => ({
+  redactions: (startDate, endDate) => ({
     text: `
       SELECT
         DATEADD(MONTH, DATEDIFF(MONTH, 0, rrs.CompletedDate), 0) AS [Month],
@@ -168,10 +164,9 @@ const QUERY_TEMPLATES = {
       WHERE rrs.CompletedDate >= @Start
         AND rrs.CompletedDate <= @End
       ORDER BY rrs.CompletedDate, rrs.Id
-      OFFSET @Offset ROWS FETCH NEXT @Limit ROWS ONLY
     `,
-    params: { Start: startDate, End: endDate, Offset: offset, Limit: limit }
-  })
+    params: { Start: startDate, End: endDate },
+  }),
 };
 
 
@@ -283,129 +278,127 @@ const SHEET_NAMES: Record<string, string> = {
   redactions: 'Redaction Requests',
 };
 
-// ─── Stream a single sheet: fetch chunk → write to Excel → repeat ───
+// ─── Stream a single sheet: DB row stream → Excel → archive entry ───
 
 /**
- * Fetches data from SQL Server in 10k-row chunks and writes each chunk
- * immediately to the ExcelJS streaming workbook writer.
+ * Executes a single unbounded SELECT with request.stream=true and writes
+ * each row immediately to an ExcelJS streaming workbook writer backed by
+ * a PassThrough stream appended to the ZIP archive.
  *
- * The workbook writer is backed by a PassThrough stream that the caller
- * has already appended to the ZIP archive, so bytes flow:
- *   DB → format row → worksheet.addRow().commit() → PassThrough → archiver → GridFS
+ * Bytes flow: DB → format row → worksheet.addRow().commit()
+ *   → PassThrough → archiver → GridFS
+ *
+ * When a sheet exceeds MAX_ROWS_PER_SHEET (500K), the current workbook
+ * is finalized and a new one is started as a separate archive entry.
  *
  * Returns the total number of rows written.
  */
 async function streamSheetToExcel(
   ExcelJS: any,
-  excelStream: PassThrough,
+  archive: archiver.Archiver,
   sheetType: string,
   sheetName: string,
   startDate: string,
   endDate: string,
+  dateRange: string,
   formatter: (row: any) => Record<string, any>,
   onChunkWritten?: (rowsSoFar: number) => void,
 ): Promise<number> {
-  const workbookWriter = new ExcelJS.stream.xlsx.WorkbookWriter({
-    stream: excelStream,
-    useSharedStrings: false,
-    useStyles: false,
-  });
+  const queryConfig = STREAMING_QUERIES[sheetType as keyof typeof STREAMING_QUERIES](startDate, endDate);
 
-  const worksheet = workbookWriter.addWorksheet(sheetName);
-
-  let headerKeys: string[] | null = null;
   let totalRows = 0;
-  let offset = 0;
-  let hasMore = true;
-  let consecutiveErrors = 0;
-  const MAX_RETRIES = 3;
+  let sheetRows = 0;
+  let splitIndex = 0;
+  let headerKeys: string[] | null = null;
 
-  console.log(`[${sheetType}] Streaming: fetch chunk → write to Excel (OFFSET/FETCH)...`);
+  // ── Helper: open a new PassThrough + WorkbookWriter for a split ──
+  function openNewSplit() {
+    splitIndex++;
+    const suffix = splitIndex > 1 ? `_Part${splitIndex}` : '';
+    const excelFileName = `${sheetName.replace(/\s+/g, '_')}${suffix}_${dateRange}.xlsx`;
 
-  while (hasMore) {
-    // Safety: stop if we exceed the per-sheet maximum
-    if (totalRows >= MAX_ROWS_PER_SHEET) {
-      console.warn(`[${sheetType}] Safety limit reached (${MAX_ROWS_PER_SHEET} rows). Stopping.`);
-      break;
+    const passThrough = new PassThrough();
+    archive.append(passThrough, { name: excelFileName });
+
+    const workbookWriter = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: passThrough,
+      useSharedStrings: false,
+      useStyles: false,
+    });
+    const worksheet = workbookWriter.addWorksheet(
+      splitIndex > 1 ? `${sheetName} (Part ${splitIndex})` : sheetName,
+    );
+
+    if (headerKeys) {
+      worksheet.columns = headerKeys.map((key: string) => ({
+        header: key,
+        key,
+        width: Math.min(Math.max(key.length + 2, 12), 60),
+      }));
     }
 
-    try {
-      // ── Fetch one chunk from DB using OFFSET/FETCH ──
-      const queryConfig = QUERY_TEMPLATES[sheetType as keyof typeof QUERY_TEMPLATES](
-        startDate, endDate, offset, DB_CHUNK_SIZE,
-      );
+    return { workbookWriter, worksheet, excelFileName };
+  }
 
-      const chunkStart = Date.now();
-      const chunk = await query(queryConfig.text, queryConfig.params, { timeout: 300000 });
-      const chunkMs = Date.now() - chunkStart;
+  async function closeSplit(ws: any, wb: any) {
+    ws.commit();
+    await wb.commit();
+  }
 
-      if (!chunk || chunk.length === 0) {
-        hasMore = false;
-        break;
-      }
+  console.log(`[${sheetType}] Streaming: DB (request.stream=true) → Excel → ZIP...`);
 
-      console.log(`[${sheetType}] Rows ${offset}–${offset + chunk.length} fetched in ${(chunkMs / 1000).toFixed(2)}s → writing...`);
+  let current = openNewSplit();
+  sheetRows = 0;
 
-      // ── Write rows immediately to the streaming Excel writer ──
-      for (const row of chunk) {
-        const formatted = formatter(row);
+  for await (const row of queryStream(queryConfig.text, queryConfig.params, { timeout: 600000 })) {
+    const formatted = formatter(row);
 
-        // Set column headers on the very first row
-        if (!headerKeys) {
-          headerKeys = Object.keys(formatted);
-          worksheet.columns = headerKeys.map((key) => ({
-            header: key,
-            key,
-            width: Math.min(Math.max(key.length + 2, 12), 60),
-          }));
-        }
+    // Set column headers on the very first row
+    if (!headerKeys) {
+      headerKeys = Object.keys(formatted);
+      current.worksheet.columns = headerKeys.map((key: string) => ({
+        header: key,
+        key,
+        width: Math.min(Math.max(key.length + 2, 12), 60),
+      }));
+    }
 
-        const rowData: Record<string, unknown> = {};
-        for (const key of headerKeys) {
-          rowData[key] = formatted[key] ?? null;
-        }
-        worksheet.addRow(rowData).commit();
-      }
+    // Multi-sheet split: close current, open next
+    if (sheetRows >= MAX_ROWS_PER_SHEET) {
+      console.log(`[${sheetType}] Sheet split at ${sheetRows} rows → starting Part ${splitIndex + 1}`);
+      await closeSplit(current.worksheet, current.workbookWriter);
+      current = openNewSplit();
+      sheetRows = 0;
+    }
 
-      // Advance offset
-      offset += chunk.length;
-      totalRows += chunk.length;
-      consecutiveErrors = 0;
+    const rowData: Record<string, unknown> = {};
+    for (const key of headerKeys) {
+      rowData[key] = formatted[key] ?? null;
+    }
+    current.worksheet.addRow(rowData).commit();
 
+    sheetRows++;
+    totalRows++;
+
+    // Progress callback every 1000 rows
+    if (totalRows % 1000 === 0) {
       onChunkWritten?.(totalRows);
+    }
 
-      // If we got fewer rows than requested, we've reached the end
-      if (chunk.length < DB_CHUNK_SIZE) {
-        hasMore = false;
-      }
-
-      // Yield to event loop so the stream can flush
-      await new Promise((resolve) => setImmediate(resolve));
-
-    } catch (error) {
-      consecutiveErrors++;
-      console.error(`[${sheetType}] Error (attempt ${consecutiveErrors}/${MAX_RETRIES}):`, error);
-
-      if (consecutiveErrors >= MAX_RETRIES) {
-        console.error(`[${sheetType}] Max retries reached. Written ${totalRows} rows so far.`);
-        hasMore = false;
-      } else {
-        const waitTime = Math.min(1000 * Math.pow(2, consecutiveErrors - 1), 10000);
-        await new Promise((resolve) => setTimeout(resolve, waitTime));
-      }
+    // Log every 50K rows
+    if (totalRows % 50000 === 0) {
+      console.log(`[${sheetType}] ${totalRows.toLocaleString()} rows streamed...`);
     }
   }
 
   // Handle empty sheet
   if (totalRows === 0) {
-    worksheet.addRow({ A: 'No data available for the selected date range' }).commit();
+    current.worksheet.addRow({ A: 'No data available for the selected date range' }).commit();
   }
 
-  // Finalize the workbook → closes the PassThrough stream
-  worksheet.commit();
-  await workbookWriter.commit();
+  await closeSplit(current.worksheet, current.workbookWriter);
 
-  console.log(`[${sheetType}] ✓ Streamed ${totalRows} rows`);
+  console.log(`[${sheetType}] ✓ Streamed ${totalRows.toLocaleString()} rows across ${splitIndex} file(s)`);
   return totalRows;
 }
 
@@ -483,8 +476,6 @@ export async function generateReportToGridFS(
       continue;
     }
 
-    const excelFileName = `${sheetName.replace(/\s+/g, '_')}_${dateRange}.xlsx`;
-
     await onProgress?.(
       5 + Math.round((sheetsCompleted / selectedSheets.length) * 80),
       'streaming_data',
@@ -495,19 +486,16 @@ export async function generateReportToGridFS(
       },
     );
 
-    // Create a PassThrough that the ExcelJS writer will write into.
-    // We append this PassThrough to the archiver so bytes flow through
-    // immediately as the writer produces them.
-    const excelPassThrough = new PassThrough();
-    archive.append(excelPassThrough, { name: excelFileName });
-
+    // streamSheetToExcel now handles its own PassThrough(s) + archive.append
+    // internally, including multi-sheet splitting at 500K rows.
     const sheetRows = await streamSheetToExcel(
       ExcelJS,
-      excelPassThrough,
+      archive,
       sheetType,
       sheetName,
       startDate,
       endDate,
+      dateRange,
       formatter,
       (rowsSoFar) => {
         // Granular progress while streaming rows
@@ -528,7 +516,7 @@ export async function generateReportToGridFS(
     totalRecords += sheetRows;
     sheetsCompleted++;
 
-    console.log(`[${sheetType}] ✓ ${sheetRows} rows → archive entry "${excelFileName}"`);
+    console.log(`[${sheetType}] ✓ ${sheetRows} rows → archive`);
   }
 
   // ─── Finalize archive → flush to GridFS ────────────────────────────

@@ -169,6 +169,103 @@ export async function queryLegacy<T = any>(
 }
 
 /**
+ * Execute a SQL query with row-by-row streaming via mssql's `request.stream = true`.
+ *
+ * Returns an async generator that yields one row at a time.  The generator
+ * applies backpressure: when the internal buffer exceeds `highWaterMark`
+ * rows the underlying request is paused, and it resumes once the consumer
+ * drains the buffer below half the high-water mark.
+ *
+ * This avoids loading the full result set into memory, which is critical
+ * for multi-million-row report queries.
+ *
+ * Usage:
+ *   for await (const row of queryStream<MyRow>(sql, params)) {
+ *     worksheet.addRow(format(row)).commit();
+ *   }
+ */
+export async function* queryStream<T = any>(
+  queryText: string,
+  params?: Record<string, any>,
+  options?: { timeout?: number; highWaterMark?: number },
+): AsyncGenerator<T> {
+  const connPool = await getPool();
+  const request = connPool.request();
+
+  // Enable streaming mode — rows arrive via events, not a single array
+  request.stream = true;
+  (request as any).timeout = options?.timeout || 300000;
+
+  if (params) {
+    Object.entries(params).forEach(([key, value]) => {
+      request.input(key, value);
+    });
+  }
+
+  const highWaterMark = options?.highWaterMark || 1000;
+  const lowWaterMark = Math.floor(highWaterMark / 2);
+  const rowQueue: T[] = [];
+  let notifyConsumer: (() => void) | null = null;
+  let streamDone = false;
+  let streamError: Error | null = null;
+  let paused = false;
+
+  request.on('row', (row: T) => {
+    rowQueue.push(row);
+    // Backpressure: pause the request when buffer is full
+    if (rowQueue.length >= highWaterMark && !paused) {
+      request.pause();
+      paused = true;
+    }
+    // Wake the consumer if it's waiting
+    if (notifyConsumer) {
+      notifyConsumer();
+      notifyConsumer = null;
+    }
+  });
+
+  request.on('error', (err: Error) => {
+    streamError = err;
+    if (notifyConsumer) {
+      notifyConsumer();
+      notifyConsumer = null;
+    }
+  });
+
+  request.on('done', () => {
+    streamDone = true;
+    if (notifyConsumer) {
+      notifyConsumer();
+      notifyConsumer = null;
+    }
+  });
+
+  // Fire the query — rows start arriving asynchronously
+  request.query(queryText);
+
+  // Yield rows to the consumer one at a time
+  while (true) {
+    // Drain whatever is in the buffer
+    while (rowQueue.length > 0) {
+      yield rowQueue.shift()!;
+      // Resume the request once we've drained below the low-water mark
+      if (paused && rowQueue.length <= lowWaterMark) {
+        request.resume();
+        paused = false;
+      }
+    }
+
+    if (streamError) throw streamError;
+    if (streamDone) return;
+
+    // Wait for more rows (or completion/error)
+    await new Promise<void>((resolve) => {
+      notifyConsumer = resolve;
+    });
+  }
+}
+
+/**
  * Close database connection
  */
 export async function closePool(): Promise<void> {

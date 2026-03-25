@@ -1,10 +1,11 @@
-import { query } from './db';
+import { queryStream } from './db';
+import { PassThrough } from 'stream';
 import path from 'path';
 import fs from 'fs';
 import archiver from 'archiver';
 
-const BATCH_SIZE = 50000; // Write 50k records per batch to Excel
-const DB_CHUNK_SIZE = 50000; // Fetch 50k records per chunk (5x fewer round-trips; xlsx already compressed internally)
+/** Excel hard limit is 1,048,576 rows; we split well below that */
+const MAX_ROWS_PER_SHEET = 500_000;
 
 interface ExcelGenerationResult {
 	fileName: string;
@@ -12,11 +13,12 @@ interface ExcelGenerationResult {
 	recordCount: number;
 }
 
-// Query templates for parallel execution with cursor-based pagination (optimized)
-const QUERY_TEMPLATES = {
-	videos: (startDate: string, endDate: string, offset: number, limit: number, lastDate?: string, lastId?: string) => ({
+// ─── Streaming SQL queries (single unbounded SELECT per sheet, no OFFSET/FETCH) ──
+
+const STREAMING_QUERIES: Record<string, (startDate: string, endDate: string) => { text: string; params: Record<string, any> }> = {
+	videos: (startDate, endDate) => ({
 		text: `
-			SELECT TOP (@Limit)
+			SELECT
 				DATEADD(MONTH, DATEDIFF(MONTH, 0, [vs].[Created]), 0) AS [Month],
 				[vs].[ClientId],
 				[vs].[ParentName],
@@ -40,24 +42,14 @@ const QUERY_TEMPLATES = {
 			FROM [dbo].[SPLUNK_VideoStatistics] AS [vs] WITH (NOLOCK)
 			WHERE [vs].[Created] >= @Start
 				AND [vs].[Created] <= @End
-				${offset > 0 && lastDate && lastId ? `
-				AND (
-					[vs].[Created] < @LastDate OR 
-					([vs].[Created] = @LastDate AND [vs].[VideoId] < @LastId)
-				)` : ''}
 			ORDER BY [vs].[Created], [vs].[VideoId]
 		`,
-		params: {
-			Start: startDate,
-			End: endDate,
-			Limit: limit,
-			...(offset > 0 && lastDate && lastId && { LastDate: lastDate, LastId: lastId })
-		}
+		params: { Start: startDate, End: endDate },
 	}),
 
-	transcriptions: (startDate: string, endDate: string, offset: number, limit: number, lastDate?: string, lastId?: string) => ({
+	transcriptions: (startDate, endDate) => ({
 		text: `
-			SELECT TOP (@Limit)
+			SELECT
 				DATEADD(MONTH, DATEDIFF(MONTH, 0, [trs].[RequestedDate]), 0) AS [Month],
 				[trs].[Id],
 				[trs].[VideoId],
@@ -88,24 +80,14 @@ const QUERY_TEMPLATES = {
 			FROM [dbo].[SPLUNK_TranscriptionRequestStatistics] AS [trs] WITH (NOLOCK)
 			WHERE [trs].[RequestedDate] >= @Start
 				AND [trs].[RequestedDate] <= @End
-				${offset > 0 && lastDate && lastId ? `
-				AND (
-					[trs].[RequestedDate] > @LastDate OR 
-					([trs].[RequestedDate] = @LastDate AND [trs].[Id] > @LastId)
-				)` : ''}
 			ORDER BY [trs].[RequestedDate] ASC, [trs].[Id] ASC
 		`,
-		params: {
-			Start: startDate,
-			End: endDate,
-			Limit: limit,
-			...(offset > 0 && lastDate && lastId && { LastDate: lastDate, LastId: lastId })
-		}
+		params: { Start: startDate, End: endDate },
 	}),
 
-	showreels: (startDate: string, endDate: string, offset: number, limit: number, lastDate?: string, lastId?: string) => ({
+	showreels: (startDate, endDate) => ({
 		text: `
-			SELECT TOP (@Limit)
+			SELECT
 				DATEADD(MONTH, DATEDIFF(MONTH, 0, [sps].[Modified]), 0) AS [Month],
 				[sps].[Id],
 				[sps].[ParentName],
@@ -125,24 +107,14 @@ const QUERY_TEMPLATES = {
 				JOIN [dbo].[SPLUNK_LOOKUP_ProjectStatus] AS [slps] WITH (NOLOCK) ON [slps].[ProjectStatus] = [ps].[ProjectStatus]
 			WHERE [sps].[Modified] >= @Start
 				AND [sps].[Modified] <= @End
-				${offset > 0 && lastDate && lastId ? `
-				AND (
-					[sps].[Modified] > @LastDate OR 
-					([sps].[Modified] = @LastDate AND [sps].[Id] > @LastId)
-				)` : ''}
 			ORDER BY [sps].[Modified], [sps].[Id]
 		`,
-		params: {
-			Start: startDate,
-			End: endDate,
-			Limit: limit,
-			...(offset > 0 && lastDate && lastId && { LastDate: lastDate, LastId: lastId })
-		}
+		params: { Start: startDate, End: endDate },
 	}),
 
-	redactions: (startDate: string, endDate: string, offset: number, limit: number, lastDate?: string, lastId?: string) => ({
+	redactions: (startDate, endDate) => ({
 		text: `
-			SELECT TOP (@Limit)
+			SELECT
 				DATEADD(MONTH, DATEDIFF(MONTH, 0, rrs.CompletedDate), 0) AS [Month],
 				rrs.Id,
 				rrs.LastUpdated,
@@ -159,20 +131,10 @@ const QUERY_TEMPLATES = {
 				JOIN [dbo].[SPLUNK_VideoStatistics] AS [vs] WITH (NOLOCK) ON [vs].[VideoId] = rrs.ContentId
 			WHERE rrs.CompletedDate >= @Start
 				AND rrs.CompletedDate <= @End
-				${offset > 0 && lastDate && lastId ? `
-				AND (
-					rrs.CompletedDate > @LastDate OR 
-					(rrs.CompletedDate = @LastDate AND rrs.Id > @LastId)
-				)` : ''}
 			ORDER BY rrs.CompletedDate ASC, rrs.Id ASC
 		`,
-		params: {
-			Start: startDate,
-			End: endDate,
-			Limit: limit,
-			...(offset > 0 && lastDate && lastId && { LastDate: lastDate, LastId: lastId })
-		}
-	})
+		params: { Start: startDate, End: endDate },
+	}),
 };
 
 // Helper functions for date formatting
@@ -196,299 +158,10 @@ const formatDateTime = (date: any) => {
 	}
 };
 
-/**
- * Fetch all data for a specific query type with cursor-based pagination (optimized)
- */
-async function fetchAllData(
-	queryType: keyof typeof QUERY_TEMPLATES,
-	startDate: string,
-	endDate: string
-): Promise<any[]> {
-	const allData: any[] = [];
-	let offset = 0;
-	let hasMore = true;
-	let lastDate: string | undefined;
-	let lastId: string | undefined;
-	let consecutiveErrors = 0;
-	const MAX_RETRIES = 3;
+// ─── Row formatters ──────────────────────────────────────────────────
 
-	console.log(`[${queryType}] Starting data fetch...`);
-
-	while (hasMore) {
-		try {
-			const queryConfig = QUERY_TEMPLATES[queryType](startDate, endDate, offset, DB_CHUNK_SIZE, lastDate, lastId);
-
-			console.log(`[${queryType}] Fetching chunk starting at offset ${offset} (lastDate: ${lastDate}, lastId: ${lastId})...`);
-			const chunkStartTime = Date.now();
-
-			// Add timeout wrapper (3 minutes per chunk)
-			const chunk = await Promise.race([
-				query(queryConfig.text, queryConfig.params, { timeout: 180000 }),
-				new Promise<any[]>((_, reject) =>
-					setTimeout(() => reject(new Error('Query timeout after 3 minutes')), 180000)
-				)
-			]);
-
-			const chunkDuration = ((Date.now() - chunkStartTime) / 1000).toFixed(2);
-			console.log(`[${queryType}] Query completed in ${chunkDuration}s`);
-
-			if (!chunk || chunk.length === 0) {
-				console.log(`[${queryType}] No more data, ending fetch`);
-				hasMore = false;
-			} else {
-				allData.push(...chunk);
-				offset += chunk.length;
-				consecutiveErrors = 0; // Reset error counter on success
-
-				// Track cursor position for next iteration
-				const lastRow = chunk[chunk.length - 1];
-				if (queryType === 'videos') {
-					lastDate = lastRow.Created;
-					lastId = lastRow.VideoId;
-				} else if (queryType === 'transcriptions') {
-					lastDate = lastRow.RequestedDate;
-					lastId = lastRow.Id;
-				} else if (queryType === 'showreels') {
-					lastDate = lastRow.Modified;
-					lastId = lastRow.Id;
-				} else if (queryType === 'redactions') {
-					lastDate = lastRow.CompletedDate;
-					lastId = lastRow.Id;
-				}
-
-				console.log(`[${queryType}] Fetched ${chunk.length} records (total: ${allData.length})`);
-
-				if (chunk.length < DB_CHUNK_SIZE) {
-					console.log(`[${queryType}] Received less than ${DB_CHUNK_SIZE} records, assuming end of data`);
-					hasMore = false;
-				}
-
-				// Yield to event loop between chunks
-				await new Promise((resolve) => setImmediate(resolve));
-			}
-		} catch (error) {
-			consecutiveErrors++;
-			console.error(`[${queryType}] Error fetching chunk at offset ${offset} (attempt ${consecutiveErrors}/${MAX_RETRIES}):`, error);
-
-			if (consecutiveErrors >= MAX_RETRIES) {
-				console.error(`[${queryType}] Max retries reached, stopping fetch. Returning ${allData.length} records so far.`);
-				hasMore = false;
-			} else {
-				// Wait before retry (exponential backoff)
-				const waitTime = Math.min(1000 * Math.pow(2, consecutiveErrors - 1), 10000);
-				console.log(`[${queryType}] Waiting ${waitTime}ms before retry...`);
-				await new Promise((resolve) => setTimeout(resolve, waitTime));
-			}
-		}
-	}
-
-	console.log(`[${queryType}] Completed: ${allData.length} total records`);
-	return allData;
-}
-
-/**
- * Write data to separate Excel file using streaming approach for large datasets
- */
-async function writeToSeparateExcelFile(
-	ExcelJS: any,
-	fileName: string,
-	filePath: string,
-	sheetName: string,
-	data: any[],
-	formatter: (row: any) => any
-): Promise<void> {
-	console.log(`[${sheetName}] Creating separate file: ${fileName}`);
-
-	const dir = path.dirname(filePath);
-	if (!fs.existsSync(dir)) {
-		console.log(`[${sheetName}] Creating directory: ${dir}`);
-		fs.mkdirSync(dir, { recursive: true });
-	}
-
-	if (data.length === 0) {
-		console.log(`[${sheetName}] No data available for selected date range, creating empty sheet...`);
-
-		const emptyWorkbook = new ExcelJS.Workbook();
-		const worksheet = emptyWorkbook.addWorksheet(sheetName);
-		worksheet.addRow(['No data available for the selected date range']);
-
-		await emptyWorkbook.xlsx.writeFile(filePath);
-
-		console.log(`[${sheetName}] ✓ Empty file created: ${fileName}`);
-		return;
-	}
-
-	console.log(`[${sheetName}] Processing ${data.length} records with streaming writer...`);
-
-	const streamingWorkbook = new ExcelJS.stream.xlsx.WorkbookWriter({
-		filename: filePath,
-		useSharedStrings: false,
-		useStyles: false
-	});
-	const worksheet = streamingWorkbook.addWorksheet(sheetName);
-
-	let headerKeys: string[] | null = null;
-	let processedRows = 0;
-
-	const ensureHeaders = (formattedRow: Record<string, any>) => {
-		if (!headerKeys) {
-			headerKeys = Object.keys(formattedRow);
-			worksheet.columns = headerKeys.map((key: string) => ({
-				header: key,
-				key,
-				width: Math.min(Math.max(key.length + 2, 12), 60)
-			}));
-		}
-	};
-
-	for (let start = 0; start < data.length; start += BATCH_SIZE) {
-		const end = Math.min(start + BATCH_SIZE, data.length);
-		console.log(`[${sheetName}] Streaming rows ${start + 1}-${end}...`);
-
-		for (let index = start; index < end; index++) {
-			const formattedRow = formatter(data[index]);
-			ensureHeaders(formattedRow);
-
-			const rowData: Record<string, unknown> = {};
-			headerKeys!.forEach((key) => {
-				rowData[key] = formattedRow[key] ?? null;
-			});
-
-			worksheet.addRow(rowData).commit();
-		}
-
-		processedRows += end - start;
-		console.log(`[${sheetName}] ${processedRows} rows written so far`);
-
-		await new Promise((resolve) => setImmediate(resolve));
-
-		if (processedRows !== 0 && processedRows % (BATCH_SIZE * 2) === 0 && global.gc) {
-			global.gc();
-		}
-	}
-
-	worksheet.commit();
-
-	try {
-		await streamingWorkbook.commit();
-	} catch (error) {
-		console.error(`[${sheetName}] Error committing workbook:`, error);
-		if (fs.existsSync(filePath)) {
-			fs.unlinkSync(filePath);
-		}
-		throw error;
-	}
-
-	console.log(`[${sheetName}] ✓ File complete: ${fileName} (${data.length} records)`);
-}
-
-/**
- * Create ZIP file from multiple Excel files
- */
-async function createZipFile(
-	files: { path: string; name: string }[],
-	zipPath: string
-): Promise<void> {
-	return new Promise((resolve, reject) => {
-		const output = fs.createWriteStream(zipPath);
-		const archive = archiver('zip', { zlib: { level: 1 } }); // Level 1: xlsx is already compressed, level 9 wastes CPU for ~1% gain
-
-		output.on('close', () => {
-			console.log(`ZIP file created: ${zipPath} (${archive.pointer()} bytes)`);
-			resolve();
-		});
-
-		archive.on('error', (err) => {
-			reject(err);
-		});
-
-		archive.pipe(output);
-
-		// Add files to ZIP
-		files.forEach((file) => {
-			if (fs.existsSync(file.path)) {
-				archive.file(file.path, { name: file.name });
-			}
-		});
-
-		archive.finalize();
-	});
-}
-
-/**
- * Generate Excel file on server with parallel queries and batched writing
- */
-export async function generateAdvancedReportExcel(
-	startDate: string,
-	endDate: string,
-	sheets?: string[]
-): Promise<ExcelGenerationResult> {
-	const startTime = Date.now();
-	console.log('=== Starting Advanced Report Generation ===');
-	console.log('Date Range:', { startDate, endDate });
-
-	// Default to all sheets if none specified
-	const selectedSheets = sheets && sheets.length > 0 ? sheets : ['videos', 'transcriptions', 'showreels', 'redactions'];
-	console.log('Selected sheets:', selectedSheets.join(', '));
-
-	// Dynamic import ExcelJS for server-side use
-	const ExcelJSModule = await import('exceljs');
-	const ExcelJS = (ExcelJSModule as any).default ?? ExcelJSModule;
-
-	// ============ PARALLEL DATA FETCHING (only selected sheets) ============
-	console.log('\n--- Phase 1: Fetching data in parallel ---');
-	const fetchStartTime = Date.now();
-
-	const dataFetches: Record<string, Promise<any[]>> = {};
-
-	if (selectedSheets.includes('videos')) {
-		dataFetches.videos = fetchAllData('videos', startDate, endDate);
-	}
-	if (selectedSheets.includes('transcriptions')) {
-		dataFetches.transcriptions = fetchAllData('transcriptions', startDate, endDate);
-	}
-	if (selectedSheets.includes('showreels')) {
-		dataFetches.showreels = fetchAllData('showreels', startDate, endDate);
-	}
-	if (selectedSheets.includes('redactions')) {
-		dataFetches.redactions = fetchAllData('redactions', startDate, endDate);
-	}
-
-	const fetchedData = await Promise.all(Object.values(dataFetches));
-	const dataResults: Record<string, any[]> = {};
-	let index = 0;
-	for (const key of Object.keys(dataFetches)) {
-		dataResults[key] = fetchedData[index++];
-	}
-
-	const fetchDuration = ((Date.now() - fetchStartTime) / 1000).toFixed(2);
-	console.log(`\n✓ All data fetched in ${fetchDuration}s`);
-	console.log('Record counts:', {
-		videos: dataResults.videos?.length || 0,
-		transcriptions: dataResults.transcriptions?.length || 0,
-		showreels: dataResults.showreels?.length || 0,
-		redactions: dataResults.redactions?.length || 0,
-		total:
-			(dataResults.videos?.length || 0) +
-			(dataResults.transcriptions?.length || 0) +
-			(dataResults.showreels?.length || 0) +
-			(dataResults.redactions?.length || 0)
-	});
-
-	// ============ PARALLEL EXCEL FILE CREATION ============
-	console.log('\n--- Phase 2: Creating separate Excel files in parallel ---');
-	const writeStartTime = Date.now();
-
-	const reportsDir = path.join(process.cwd(), 'public', 'reports');
-	if (!fs.existsSync(reportsDir)) {
-		fs.mkdirSync(reportsDir, { recursive: true });
-	}
-
-	const timestamp = Date.now();
-	const dateRange = `${startDate.replace(/-/g, '')}_to_${endDate.replace(/-/g, '')}`;
-
-	// Formatters
-	const videosFormatter = (row: any) => ({
+const FORMATTERS: Record<string, (row: any) => Record<string, any>> = {
+	videos: (row) => ({
 		Month: formatDate(row.Month),
 		ClientId: row.ClientId,
 		ParentName: row.ParentName,
@@ -496,7 +169,7 @@ export async function generateAdvancedReportExcel(
 		Title: row.Title,
 		VideoId: row.VideoId,
 		Region: row.Region,
-		UserId: row.UserId,
+		UserId: row.userId,
 		Created: formatDateTime(row.Created),
 		CreatedUnix: row.CreatedUnix,
 		LanguageIsoCode: row.LanguageIsoCode,
@@ -508,10 +181,10 @@ export async function generateAdvancedReportExcel(
 		ModifiedUnix: row.ModifiedUnix,
 		MediaSource: row.MediaSource,
 		UploadSource: row.UploadSource,
-		LastUpdated: formatDateTime(row.LastUpdated)
-	});
+		LastUpdated: formatDateTime(row.LastUpdated),
+	}),
 
-	const transcriptionsFormatter = (row: any) => ({
+	transcriptions: (row) => ({
 		Month: formatDate(row.Month),
 		Id: row.Id,
 		VideoId: row.VideoId,
@@ -538,10 +211,10 @@ export async function generateAdvancedReportExcel(
 		MediaSource: row.MediaSource,
 		UploadSource: row.UploadSource,
 		Region: row.Region,
-		LastUpdated: formatDateTime(row.LastUpdated)
-	});
+		LastUpdated: formatDateTime(row.LastUpdated),
+	}),
 
-	const showreelsFormatter = (row: any) => ({
+	showreels: (row) => ({
 		Month: formatDate(row.Month),
 		Id: row.Id,
 		ParentName: row.ParentName,
@@ -554,10 +227,10 @@ export async function generateAdvancedReportExcel(
 		Modified: formatDateTime(row.Modified),
 		ModifiedUnix: row.ModifiedUnix,
 		ProjectLengthInMinutes: row.ProjectLengthInMinutes,
-		LastUpdated: formatDateTime(row.LastUpdated)
-	});
+		LastUpdated: formatDateTime(row.LastUpdated),
+	}),
 
-	const redactionsFormatter = (row: any) => ({
+	redactions: (row) => ({
 		Month: formatDate(row.Month),
 		Id: row.Id,
 		LastUpdated: formatDateTime(row.LastUpdated),
@@ -569,170 +242,228 @@ export async function generateAdvancedReportExcel(
 		Status: row.Status,
 		Region: row.Region,
 		'Customer Name': row['Customer Name'],
-		'Channel Name': row['Channel Name']
-	});
+		'Channel Name': row['Channel Name'],
+	}),
+};
 
-	const createdFiles: { path: string; name: string }[] = [];
-	const hasLargeFiles = Object.values(dataResults).some((dataset) => (dataset?.length || 0) > 100000);
+const SHEET_NAMES: Record<string, string> = {
+	videos: 'Videos',
+	transcriptions: 'Transcriptions',
+	showreels: 'Showreels',
+	redactions: 'Redaction Requests',
+};
 
-	if (hasLargeFiles) {
-		console.log('⚠️  Large datasets detected - writing files sequentially to prevent memory issues...');
+// ─── Stream a single sheet: DB row stream → Excel writer → archive ──
 
-		if (selectedSheets.includes('videos')) {
-			const fileName = `Videos_${dateRange}.xlsx`;
-			const filePath = path.join(reportsDir, fileName);
-			await writeToSeparateExcelFile(ExcelJS, fileName, filePath, 'Videos', dataResults.videos || [], videosFormatter);
-			createdFiles.push({ path: filePath, name: fileName });
-		}
+/**
+ * Streams rows from SQL Server directly into an ExcelJS WorkbookWriter
+ * backed by a PassThrough stream.  The PassThrough is appended to the
+ * archiver so bytes flow:
+ *
+ *   DB (request.stream) → format row → worksheet.addRow().commit()
+ *     → PassThrough → archiver → disk ZIP
+ *
+ * When a sheet exceeds MAX_ROWS_PER_SHEET (500K), the current workbook
+ * is finalized and a new one is started for the next split, each
+ * appended as a separate archive entry.
+ */
+async function streamSheetToArchive(
+	ExcelJS: any,
+	archive: archiver.Archiver,
+	sheetType: string,
+	sheetName: string,
+	startDate: string,
+	endDate: string,
+	dateRange: string,
+	formatter: (row: any) => Record<string, any>,
+): Promise<{ totalRows: number; filesCreated: number }> {
+	const queryConfig = STREAMING_QUERIES[sheetType](startDate, endDate);
 
-		if (selectedSheets.includes('transcriptions')) {
-			const fileName = `Transcriptions_${dateRange}.xlsx`;
-			const filePath = path.join(reportsDir, fileName);
-			await writeToSeparateExcelFile(
-				ExcelJS,
-				fileName,
-				filePath,
-				'Transcriptions',
-				dataResults.transcriptions || [],
-				transcriptionsFormatter
-			);
-			createdFiles.push({ path: filePath, name: fileName });
-		}
+	let totalRows = 0;
+	let sheetRows = 0;
+	let splitIndex = 0;
+	let headerKeys: string[] | null = null;
 
-		if (selectedSheets.includes('showreels')) {
-			const fileName = `Showreels_${dateRange}.xlsx`;
-			const filePath = path.join(reportsDir, fileName);
-			await writeToSeparateExcelFile(ExcelJS, fileName, filePath, 'Showreels', dataResults.showreels || [], showreelsFormatter);
-			createdFiles.push({ path: filePath, name: fileName });
-		}
+	// ── Helper: create a new PassThrough + WorkbookWriter pair ──
+	function openNewSplit() {
+		splitIndex++;
+		const suffix = splitIndex > 1 ? `_Part${splitIndex}` : '';
+		const excelFileName = `${sheetName.replace(/\s+/g, '_')}${suffix}_${dateRange}.xlsx`;
 
-		if (selectedSheets.includes('redactions')) {
-			const fileName = `Redactions_${dateRange}.xlsx`;
-			const filePath = path.join(reportsDir, fileName);
-			await writeToSeparateExcelFile(
-				ExcelJS,
-				fileName,
-				filePath,
-				'Redaction Requests',
-				dataResults.redactions || [],
-				redactionsFormatter
-			);
-			createdFiles.push({ path: filePath, name: fileName });
-		}
-	} else {
-		console.log('Writing files in parallel (small datasets)...');
-		const filePromises: Promise<{ path: string; name: string }>[] = [];
+		const passThrough = new PassThrough();
+		archive.append(passThrough, { name: excelFileName });
 
-		if (selectedSheets.includes('videos')) {
-			const fileName = `Videos_${dateRange}.xlsx`;
-			const filePath = path.join(reportsDir, fileName);
-			filePromises.push(
-				writeToSeparateExcelFile(ExcelJS, fileName, filePath, 'Videos', dataResults.videos || [], videosFormatter).then(() => ({
-					path: filePath,
-					name: fileName
-				}))
-			);
-		}
-
-		if (selectedSheets.includes('transcriptions')) {
-			const fileName = `Transcriptions_${dateRange}.xlsx`;
-			const filePath = path.join(reportsDir, fileName);
-			filePromises.push(
-				writeToSeparateExcelFile(
-					ExcelJS,
-					fileName,
-					filePath,
-					'Transcriptions',
-					dataResults.transcriptions || [],
-					transcriptionsFormatter
-				).then(() => ({ path: filePath, name: fileName }))
-			);
-		}
-
-		if (selectedSheets.includes('showreels')) {
-			const fileName = `Showreels_${dateRange}.xlsx`;
-			const filePath = path.join(reportsDir, fileName);
-			filePromises.push(
-				writeToSeparateExcelFile(ExcelJS, fileName, filePath, 'Showreels', dataResults.showreels || [], showreelsFormatter).then(
-					() => ({ path: filePath, name: fileName })
-				)
-			);
-		}
-
-		if (selectedSheets.includes('redactions')) {
-			const fileName = `Redactions_${dateRange}.xlsx`;
-			const filePath = path.join(reportsDir, fileName);
-			filePromises.push(
-				writeToSeparateExcelFile(
-					ExcelJS,
-					fileName,
-					filePath,
-					'Redaction Requests',
-					dataResults.redactions || [],
-					redactionsFormatter
-				).then(() => ({ path: filePath, name: fileName }))
-			);
-		}
-
-		const results = await Promise.allSettled(filePromises);
-		results.forEach((result) => {
-			if (result.status === 'fulfilled') {
-				createdFiles.push(result.value);
-			} else {
-				console.error('File creation failed:', result.reason);
-			}
+		const workbookWriter = new ExcelJS.stream.xlsx.WorkbookWriter({
+			stream: passThrough,
+			useSharedStrings: false,
+			useStyles: false,
 		});
+		const worksheet = workbookWriter.addWorksheet(
+			splitIndex > 1 ? `${sheetName} (Part ${splitIndex})` : sheetName,
+		);
+
+		// Re-apply headers if we already know them (subsequent splits)
+		if (headerKeys) {
+			worksheet.columns = headerKeys.map((key: string) => ({
+				header: key,
+				key,
+				width: Math.min(Math.max(key.length + 2, 12), 60),
+			}));
+		}
+
+		return { passThrough, workbookWriter, worksheet, excelFileName };
 	}
 
-	const writeDuration = ((Date.now() - writeStartTime) / 1000).toFixed(2);
-	console.log(`\n✓ All Excel files created in ${writeDuration}s`);
-	console.log(`Created ${createdFiles.length} files:`, createdFiles.map((f) => f.name));
+	// ── Helper: close the current split ──
+	async function closeSplit(ws: any, wb: any) {
+		ws.commit();
+		await wb.commit(); // Closes the PassThrough
+	}
 
-	// ============ CREATE ZIP FILE ============
-	console.log('\n--- Phase 3: Creating ZIP archive ---');
-	const zipStartTime = Date.now();
+	console.log(`[${sheetType}] Starting streaming query → Excel → ZIP...`);
 
+	let current = openNewSplit();
+	sheetRows = 0;
+
+	for await (const row of queryStream(queryConfig.text, queryConfig.params, { timeout: 600000 })) {
+		const formatted = formatter(row);
+
+		// Set column headers on the very first row
+		if (!headerKeys) {
+			headerKeys = Object.keys(formatted);
+			current.worksheet.columns = headerKeys.map((key: string) => ({
+				header: key,
+				key,
+				width: Math.min(Math.max(key.length + 2, 12), 60),
+			}));
+		}
+
+		// Multi-sheet split: close current, open next
+		if (sheetRows >= MAX_ROWS_PER_SHEET) {
+			console.log(`[${sheetType}] Sheet split at ${sheetRows} rows → starting Part ${splitIndex + 1}`);
+			await closeSplit(current.worksheet, current.workbookWriter);
+			current = openNewSplit();
+			sheetRows = 0;
+		}
+
+		const rowData: Record<string, unknown> = {};
+		for (const key of headerKeys) {
+			rowData[key] = formatted[key] ?? null;
+		}
+		current.worksheet.addRow(rowData).commit();
+
+		sheetRows++;
+		totalRows++;
+
+		// Log progress every 50K rows
+		if (totalRows % 50000 === 0) {
+			console.log(`[${sheetType}] ${totalRows.toLocaleString()} rows streamed...`);
+		}
+	}
+
+	// Handle empty result set
+	if (totalRows === 0) {
+		current.worksheet.addRow({ A: 'No data available for the selected date range' }).commit();
+	}
+
+	await closeSplit(current.worksheet, current.workbookWriter);
+
+	console.log(`[${sheetType}] ✓ Streamed ${totalRows.toLocaleString()} rows across ${splitIndex} file(s)`);
+	return { totalRows, filesCreated: splitIndex };
+}
+
+// ─── Main Entry Point ────────────────────────────────────────────────
+
+/**
+ * Generate Excel report with TRUE streaming to disk:
+ *
+ *   DB (request.stream=true) → format row → ExcelJS WorkbookWriter
+ *     → PassThrough → archiver (ZIP) → disk file
+ *
+ * At no point is the full dataset held in memory.  Each row is
+ * formatted and committed to the streaming Excel writer, which pushes
+ * bytes through the ZIP archiver into the output file.
+ *
+ * Sheets are split at 500K rows to stay within Excel's 1,048,576 limit.
+ */
+export async function generateAdvancedReportExcel(
+	startDate: string,
+	endDate: string,
+	sheets?: string[],
+): Promise<ExcelGenerationResult> {
+	const startTime = Date.now();
+	console.log('=== Starting Advanced Report Generation (TRUE STREAMING) ===');
+	console.log('Date Range:', { startDate, endDate });
+
+	const selectedSheets =
+		sheets && sheets.length > 0
+			? sheets
+			: ['videos', 'transcriptions', 'showreels', 'redactions'];
+	console.log('Selected sheets:', selectedSheets.join(', '));
+
+	const ExcelJSModule = await import('exceljs');
+	const ExcelJS = (ExcelJSModule as any).default ?? ExcelJSModule;
+
+	// ── Set up output path ──
+	const reportsDir = path.join(process.cwd(), 'public', 'reports');
+	if (!fs.existsSync(reportsDir)) {
+		fs.mkdirSync(reportsDir, { recursive: true });
+	}
+
+	const timestamp = Date.now();
+	const dateRange = `${startDate.replace(/-/g, '')}_to_${endDate.replace(/-/g, '')}`;
 	const zipFileName = `Advanced_Report_${dateRange}_${timestamp}.zip`;
 	const zipFilePath = path.join(reportsDir, zipFileName);
 
-	await createZipFile(createdFiles, zipFilePath);
+	// ── Set up streaming pipeline: archiver → disk file ──
+	const output = fs.createWriteStream(zipFilePath);
+	const archive = archiver('zip', { zlib: { level: 1 } });
 
-	const zipDuration = ((Date.now() - zipStartTime) / 1000).toFixed(2);
-	console.log(`✓ ZIP file created in ${zipDuration}s`);
+	const archiveFinished = new Promise<void>((resolve, reject) => {
+		output.on('close', resolve);
+		archive.on('error', reject);
+	});
 
-	// Clean up individual Excel files
-	console.log('\n--- Phase 4: Cleaning up temporary files ---');
-	for (const file of createdFiles) {
-		try {
-			fs.unlinkSync(file.path);
-			console.log(`Deleted: ${file.name}`);
-		} catch (err) {
-			console.warn(`Could not delete ${file.name}:`, err);
+	archive.pipe(output);
+
+	// ── Process each sheet sequentially: DB → Excel → ZIP ──
+	let totalRecords = 0;
+
+	for (const sheetType of selectedSheets) {
+		const sheetName = SHEET_NAMES[sheetType] || sheetType;
+		const formatter = FORMATTERS[sheetType];
+
+		if (!formatter || !STREAMING_QUERIES[sheetType]) {
+			console.warn(`No formatter/query for sheet type: ${sheetType}, skipping.`);
+			continue;
 		}
+
+		const { totalRows } = await streamSheetToArchive(
+			ExcelJS,
+			archive,
+			sheetType,
+			sheetName,
+			startDate,
+			endDate,
+			dateRange,
+			formatter,
+		);
+
+		totalRecords += totalRows;
 	}
 
-	const totalRecords =
-		(dataResults.videos?.length || 0) +
-		(dataResults.transcriptions?.length || 0) +
-		(dataResults.showreels?.length || 0) +
-		(dataResults.redactions?.length || 0);
-	const totalDuration = ((Date.now() - startTime) / 1000).toFixed(2);
+	// ── Finalize archive ──
+	await archive.finalize();
+	await archiveFinished;
 
-	console.log('\n=== Report Generation Complete ===');
+	const totalDuration = ((Date.now() - startTime) / 1000).toFixed(2);
+	console.log('\n=== Advanced Report Generation Complete (TRUE STREAMING) ===');
 	console.log(`Total Time: ${totalDuration}s`);
-	console.log('Summary:', {
-		zipFileName,
-		totalRecords,
-		filesCreated: createdFiles.length,
-		videos: dataResults.videos?.length || 0,
-		transcriptions: dataResults.transcriptions?.length || 0,
-		showreels: dataResults.showreels?.length || 0,
-		redactions: dataResults.redactions?.length || 0
-	});
+	console.log('Summary:', { zipFileName, totalRecords });
 
 	return {
 		fileName: zipFileName,
 		filePath: zipFilePath,
-		recordCount: totalRecords
+		recordCount: totalRecords,
 	};
 }
