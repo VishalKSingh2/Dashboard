@@ -178,15 +178,8 @@ export default function SearchableSelect({
 
             {/* Footer Info */}
             {!searchTerm && filteredOptions.length > maxVisible + 1 && (
-              <div className="px-4 py-2.5 text-xs bg-gradient-to-r from-gray-50 to-slate-50 border-t border-gray-200">
-                <div className="flex items-center justify-between text-gray-600">
-                  <span className="flex items-center gap-1.5">
-                    <div className="h-1.5 w-1.5 rounded-full bg-blue-500"></div>
-                    Showing <span className="font-semibold text-gray-700">{maxVisible}</span> of{' '}
-                    <span className="font-semibold text-gray-700">{filteredOptions.length - 1}</span> customers
-                  </span>
-                  <span className="text-gray-500">↑ Search for more</span>
-                </div>
+              <div className="px-3 py-1.5 text-[11px] text-gray-400 border-t border-gray-100 text-center">
+                {maxVisible} of {filteredOptions.length - 1} &middot; type to search
               </div>
             )}
           </div>

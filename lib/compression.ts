@@ -108,7 +108,8 @@ export function supportsCompression(acceptEncoding?: string | null): boolean {
 }
 
 /**
- * Smart compression based on client capabilities and data size
+ * Smart compression based on client capabilities and data size.
+ * Serializes data exactly once (not twice).
  */
 export async function smartCompress<T = any>(
   data: T,
@@ -123,9 +124,48 @@ export async function smartCompress<T = any>(
     });
   }
 
-  // Estimate data size
-  const estimatedSize = Buffer.byteLength(JSON.stringify(data), 'utf8');
-  const settings = getCompressionSettings(estimatedSize);
+  // Serialize once, then decide compression level based on actual size
+  let jsonString: string;
+  try {
+    jsonString = JSON.stringify(data);
+  } catch (serializeError) {
+    console.error('JSON serialization error in smartCompress:', serializeError);
+    return NextResponse.json(data);
+  }
 
-  return compressResponse(data, settings);
+  const originalSize = Buffer.byteLength(jsonString, 'utf8');
+  const settings = getCompressionSettings(originalSize);
+
+  // If below threshold, return uncompressed
+  if (originalSize < (settings.threshold ?? 1024)) {
+    return NextResponse.json(data, {
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Uncompressed-Size': originalSize.toString(),
+        'X-Compression': 'none',
+      },
+    });
+  }
+
+  // Compress the already-serialized string (no second JSON.stringify)
+  const compressed = await gzipAsync(Buffer.from(jsonString, 'utf8'), {
+    level: settings.level ?? 6,
+  });
+
+  const compressedSize = compressed.length;
+  const compressionRatio = ((1 - compressedSize / originalSize) * 100).toFixed(1);
+
+  return new NextResponse(compressed, {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/json',
+      'Content-Encoding': 'gzip',
+      'Content-Length': compressedSize.toString(),
+      'X-Original-Size': originalSize.toString(),
+      'X-Compressed-Size': compressedSize.toString(),
+      'X-Compression-Ratio': compressionRatio,
+      'Cache-Control': 'public, max-age=60, stale-while-revalidate=120',
+      'Vary': 'Accept-Encoding',
+    },
+  });
 }

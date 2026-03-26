@@ -67,20 +67,15 @@ export default function AdvancedDownloadButton({ filters, disabled }: AdvancedDo
         onClick={() => setIsModalOpen(true)}
         disabled={disabled}
         className={cn(
-          'flex flex-col items-start gap-0.5 px-4 py-2 rounded-lg font-medium transition-all',
+          'flex items-center gap-2 px-4 py-2.5 rounded-lg font-medium text-sm transition-all',
           'bg-purple-600 text-white hover:bg-purple-700',
           'disabled:opacity-50 disabled:cursor-not-allowed',
           'shadow-sm hover:shadow-md',
         )}
-        title="Generate advanced report"
+        title="Select sheets & generate advanced report"
       >
-        <div className="flex items-center gap-2">
-          <FileSpreadsheet className="w-4 h-4" />
-          <span>Advanced Report</span>
-        </div>
-        <span className="text-[10px] text-purple-200 font-normal">
-          Select sheets &amp; generate
-        </span>
+        <FileSpreadsheet className="w-4 h-4" />
+        Advanced Report
       </button>
 
       {/* ─── Sheet Selection Modal ─── */}
