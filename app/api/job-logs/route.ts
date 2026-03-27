@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getJob, getJobs } from '@/lib/mongoJobStore';
+import { getJob, getJobs } from '@/lib/jobs';
 
 export const dynamic = 'force-dynamic';
 
@@ -56,7 +56,7 @@ export async function GET(request: NextRequest) {
 
     if (!job) {
       return NextResponse.json(
-        { error: 'Job not found (may have expired)' },
+        { error: 'Job not found' },
         { status: 404 }
       );
     }

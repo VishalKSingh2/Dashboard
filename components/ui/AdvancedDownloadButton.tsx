@@ -48,6 +48,11 @@ export default function AdvancedDownloadButton({ filters, disabled }: AdvancedDo
         throw new Error(err.error || 'Failed to queue report');
       }
 
+      const result = await response.json();
+
+      // Notify ReportJobsPanel instantly via custom event
+      window.dispatchEvent(new CustomEvent('job-created', { detail: result }));
+
       // Job queued → close modal. ReportJobsPanel will pick it up.
       setIsModalOpen(false);
     } catch (error) {

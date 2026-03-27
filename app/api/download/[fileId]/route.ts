@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getFileInfo, getDownloadStream } from '../../../../lib/gridfs';
+import { getFileInfo, getDownloadStream } from '@/lib/db';
 
 /**
  * GET /api/download/[fileId]

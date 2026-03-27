@@ -4,10 +4,9 @@ import {
   completeJob,
   failJob,
   updateProgress,
-  cleanupExpiredJobs,
-} from '@/lib/mongoJobStore';
-import { generateReportToGridFS } from '@/lib/gridfsReportGenerator';
-import { buildDownloadUrl, deleteFiles } from '@/lib/gridfs';
+} from '@/lib/jobs';
+import { generateReportToGridFS } from '@/lib/reporting';
+import { buildDownloadUrl } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300; // 5 minutes max execution time
@@ -24,18 +23,6 @@ export const maxDuration = 300; // 5 minutes max execution time
 
 export async function POST(request: NextRequest) {
   try {
-    // Cleanup expired jobs + their GridFS files
-    console.log('Cleaning up expired jobs...');
-    try {
-      const expiredFileIds = await cleanupExpiredJobs();
-      if (expiredFileIds.length > 0) {
-        await deleteFiles(expiredFileIds);
-        console.log(`Deleted ${expiredFileIds.length} expired GridFS files`);
-      }
-    } catch (cleanupErr) {
-      console.warn('Cleanup warning (non-fatal):', cleanupErr);
-    }
-
     // Atomically claim and process jobs one at a time until none remain.
     // claimNextPendingJob uses findOneAndUpdate so concurrent callers
     // never claim the same job — no in-memory lock required.

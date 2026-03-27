@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { DashboardData, DashboardFilters } from '@/lib/types';
 import { format, subDays } from 'date-fns';
-import { smartCompress } from '@/lib/compression';
+import { smartCompress } from '@/lib/utils';
 
 export async function GET(request: NextRequest) {
   try {

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createJob } from '@/lib/mongoJobStore';
-import { QueueReportRequest } from '@/lib/mongoJobTypes';
+import { createJob } from '@/lib/jobs';
+import { QueueReportRequest } from '@/lib/jobs';
 
 export const dynamic = 'force-dynamic';
 

@@ -14,7 +14,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { JobSSEEvent } from '@/lib/mongoJobTypes';
+import { JobSSEEvent } from '@/lib/jobs';
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -219,29 +219,13 @@ export default function ReportJobsPage() {
 
   return (
     <div className="min-h-screen bg-gray-50 relative z-0">
-      {/* Header */}
-      <div className="bg-white border-b border-gray-200 sticky top-14 z-30">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-16">
-            <div className="flex items-center gap-4">
-              <Link
-                href="/dashboard"
-                className="flex items-center gap-1.5 text-gray-500 hover:text-gray-700 transition-colors"
-              >
-                <ArrowLeft className="w-4 h-4" />
-                <span className="text-sm font-medium">Dashboard</span>
-              </Link>
-              <div className="h-6 w-px bg-gray-200" />
-              <div className="flex items-center gap-2">
-                <FileSpreadsheet className="w-5 h-5 text-purple-600" />
-                <h1 className="text-lg font-semibold text-gray-900">Report Jobs</h1>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        {/* Page Title */}
+        <div className="flex items-center gap-2 mb-6">
+          <FileSpreadsheet className="w-5 h-5 text-purple-600" />
+          <h1 className="text-lg font-semibold text-gray-900">Report Jobs</h1>
+        </div>
+
         {/* Stats Cards */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
           <StatCard
@@ -445,7 +429,7 @@ function JobCard({
           <div className="flex items-center gap-2 text-xs text-gray-500">
             <span className="font-mono">{job.jobId.slice(0, 8)}...</span>
             <span>·</span>
-            <span>{formatRelative(job.createdAt)}</span>
+            <span>{formatDateTime(job.createdAt)}</span>
             {job.sheets.length > 0 && (
               <>
                 <span>·</span>
@@ -685,23 +669,6 @@ function phaseLabel(phase: string): string {
     failed: 'Failed',
   };
   return labels[phase] || phase;
-}
-
-function formatRelative(dateStr: string): string {
-  try {
-    const date = new Date(dateStr);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffMin = Math.floor(diffMs / 60000);
-    if (diffMin < 1) return 'just now';
-    if (diffMin < 60) return `${diffMin}m ago`;
-    const diffHr = Math.floor(diffMin / 60);
-    if (diffHr < 24) return `${diffHr}h ago`;
-    const diffDay = Math.floor(diffHr / 24);
-    return `${diffDay}d ago`;
-  } catch {
-    return '';
-  }
 }
 
 function formatDateTime(dateStr: string): string {
