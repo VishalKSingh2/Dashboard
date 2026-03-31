@@ -2,8 +2,9 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { BarChart3, ClipboardList } from 'lucide-react';
+import { BarChart3, ClipboardList, LogOut } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { signOut, useSession } from 'next-auth/react';
 
 const navItems = [
   { href: '/dashboard', label: 'Dashboard', icon: BarChart3 },
@@ -12,6 +13,7 @@ const navItems = [
 
 export default function Navbar() {
   const pathname = usePathname();
+  const { data: session } = useSession();
 
   return (
     <nav className="bg-white border-b border-gray-200 sticky top-0 z-[60] shadow-sm">
@@ -40,6 +42,19 @@ export default function Navbar() {
                 </Link>
               );
             })}
+
+            {session?.user && (
+              <div className="flex items-center gap-3 ml-4 pl-4 border-l border-gray-200">
+                <span className="text-sm text-gray-600">{session.user.name || session.user.email}</span>
+                <button
+                  onClick={() => signOut({ callbackUrl: '/' })}
+                  className="flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-medium text-gray-600 hover:text-red-600 hover:bg-red-50 transition-colors"
+                >
+                  <LogOut className="w-4 h-4" />
+                  Sign Out
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>

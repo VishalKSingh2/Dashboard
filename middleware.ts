@@ -1,33 +1,66 @@
+import { auth } from '@/lib/auth';
 import { NextResponse } from 'next/server';
-import type { NextRequest } from 'next/server';
+import { jwtVerify, createRemoteJWKSet } from 'jose';
 
-export function middleware(request: NextRequest) {
-  const response = NextResponse.next();
+const JWKS = createRemoteJWKSet(
+  new URL(`${process.env.KEYCLOAK_ISSUER}/protocol/openid-connect/certs`)
+);
 
-  // Enable compression support
-  if (!request.headers.get('accept-encoding')?.includes('gzip')) {
-    // Client supports compression - indicated by Accept-Encoding header
-    response.headers.set('Vary', 'Accept-Encoding');
+async function verifyBearerToken(token: string) {
+  try {
+    const { payload } = await jwtVerify(token, JWKS, {
+      issuer: process.env.KEYCLOAK_ISSUER,
+    });
+    return payload;
+  } catch {
+    return null;
   }
-  
-  // Add performance headers for API routes
-  if (request.nextUrl.pathname.startsWith('/api')) {
-    response.headers.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=120');
-    
-    // Enable compression for large responses
-    if (request.nextUrl.pathname.includes('dashboard-db') || 
-        request.nextUrl.pathname.includes('advanced-report')) {
-      response.headers.set('X-Content-Type-Options', 'nosniff');
-      response.headers.set('X-Compression-Enabled', 'true');
-    }
-  }
-
-  return response;
 }
+
+export default auth(async (req) => {
+  const { pathname } = req.nextUrl;
+
+  // Allow auth routes to pass through
+  if (pathname.startsWith('/api/auth')) {
+    return NextResponse.next();
+  }
+
+  // For API routes: check Bearer token first, then session
+  if (pathname.startsWith('/api')) {
+    const authHeader = req.headers.get('authorization');
+
+    // If Bearer token is provided, validate it
+    if (authHeader?.startsWith('Bearer ')) {
+      const token = authHeader.slice(7);
+      const payload = await verifyBearerToken(token);
+      if (payload) {
+        return NextResponse.next();
+      }
+      return NextResponse.json({ error: 'Invalid or expired token' }, { status: 401 });
+    }
+
+    // Fall back to session-based auth (browser requests)
+    if (!req.auth) {
+      return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
+    }
+
+    return NextResponse.next();
+  }
+
+  // For page routes: redirect to sign in
+  if (!req.auth) {
+    const signInUrl = new URL('/api/auth/signin', req.url);
+    signInUrl.searchParams.set('callbackUrl', req.url);
+    return NextResponse.redirect(signInUrl);
+  }
+
+  return NextResponse.next();
+});
 
 export const config = {
   matcher: [
     '/api/:path*',
     '/dashboard/:path*',
+    '/report-jobs/:path*',
   ],
 };
