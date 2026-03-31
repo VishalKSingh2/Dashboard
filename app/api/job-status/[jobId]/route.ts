@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
-import { getJob } from '@/lib/mongoJobStore';
-import { JobSSEEvent } from '@/lib/mongoJobTypes';
+import { getJob } from '@/lib/jobs';
+import { JobSSEEvent } from '@/lib/jobs';
 
 export const dynamic = 'force-dynamic';
 

@@ -1,6 +1,6 @@
 import { GridFSBucket, ObjectId } from 'mongodb';
 import { Readable, PassThrough } from 'stream';
-import { getMongoDb } from './mongodb';
+import { getMongoDb } from './mongoClient';
 
 /**
  * GridFS File Storage Utilities

@@ -1,12 +1,12 @@
 import { Collection, ObjectId } from 'mongodb';
 import { v4 as uuidv4 } from 'uuid';
-import { getMongoDb } from './mongodb';
+import { getMongoDb } from '../db/mongoClient';
 import {
   ReportJobDocument,
   JobStatus,
   JobPhase,
   QueueReportRequest,
-} from './mongoJobTypes';
+} from './jobTypes';
 
 /**
  * MongoDB Job Store
@@ -20,16 +20,11 @@ import {
  *   - Update job status, phase, and progress
  *   - Fetch pending jobs for worker processing
  *   - Complete/fail jobs with result metadata
- *   - Cleanup expired jobs and their GridFS files
- * 
  * Collection: 'jobs'
- * Indexes: jobId (unique), status, createdAt, expiresAt
+ * Indexes: jobId (unique), status, createdAt
  */
 
 const COLLECTION_NAME = 'jobs';
-
-/** Report files expire after 24 hours */
-const EXPIRY_HOURS = 24;
 
 // ─── Collection Access ───────────────────────────────────────────────
 
@@ -59,10 +54,15 @@ export async function ensureIndexes(): Promise<void> {
     collection.createIndex({ jobId: 1 }, { unique: true }),
     // Index on status for fetching pending jobs
     collection.createIndex({ status: 1, createdAt: 1 }),
-    // TTL index — MongoDB auto-deletes docs after expiresAt
-    // Note: Only deletes completed/failed jobs that have expiresAt set
-    collection.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
   ]);
+
+  // Drop legacy TTL index on expiresAt if it exists (jobs no longer auto-expire)
+  try {
+    await collection.dropIndex('expiresAt_1');
+    console.log('Dropped legacy TTL index on expiresAt');
+  } catch {
+    // Index doesn't exist — ignore
+  }
 
   indexesCreated = true;
   console.log('MongoDB job indexes ensured');
@@ -241,14 +241,12 @@ export async function completeJob(
   }
 ): Promise<ReportJobDocument | null> {
   const now = new Date();
-  const expiresAt = new Date(now.getTime() + EXPIRY_HOURS * 60 * 60 * 1000);
 
   return updateJob(jobId, {
     status: 'completed',
     phase: 'completed',
     progress: 100,
     completedAt: now,
-    expiresAt,
     fileId: result.fileId,
     fileName: result.fileName,
     fileSize: result.fileSize,
@@ -270,43 +268,6 @@ export async function failJob(
     completedAt: new Date(),
     errorMessage,
   });
-}
-
-// ─── Cleanup ─────────────────────────────────────────────────────────
-
-/**
- * Manually clean up expired jobs and return their file IDs 
- * so the caller can also delete GridFS files.
- * 
- * Note: The TTL index on expiresAt handles automatic document deletion,
- * but this method is useful for explicitly cleaning up GridFS files
- * before the TTL kicks in.
- */
-export async function cleanupExpiredJobs(): Promise<string[]> {
-  const collection = await getJobsCollection();
-  const now = new Date();
-
-  // Find expired jobs that have file IDs (need GridFS cleanup)
-  const expiredJobs = await collection
-    .find({
-      expiresAt: { $lte: now },
-      fileId: { $exists: true, $ne: '' },
-    })
-    .toArray();
-
-  const fileIds = expiredJobs
-    .map((job) => job.fileId)
-    .filter((id): id is string => !!id);
-
-  if (expiredJobs.length > 0) {
-    // Delete the expired job documents
-    await collection.deleteMany({
-      expiresAt: { $lte: now },
-    });
-    console.log(`Cleaned up ${expiredJobs.length} expired jobs`);
-  }
-
-  return fileIds;
 }
 
 /**

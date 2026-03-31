@@ -61,9 +61,6 @@ export interface ReportJobDocument {
   /** When the job completed or failed */
   completedAt?: Date;
 
-  /** When the report file expires (auto-cleanup) */
-  expiresAt?: Date;
-
   // ── Result (on completion) ──
 
   /** GridFS file ID of the generated report */

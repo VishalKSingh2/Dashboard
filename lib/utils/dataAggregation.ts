@@ -1,5 +1,5 @@
 import { format, startOfWeek, startOfMonth, addDays } from 'date-fns';
-import { MediaUploadData, MediaHoursData, DailyData } from './types';
+import { MediaUploadData, MediaHoursData, DailyData } from '../types/dashboard';
 
 export type DisplayGranularity = 'daily' | 'weekly' | 'monthly';
 

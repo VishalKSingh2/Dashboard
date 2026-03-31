@@ -14,7 +14,7 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { JobSSEEvent } from '@/lib/mongoJobTypes';
+import { JobSSEEvent } from '@/lib/jobs';
 
 interface JobItem {
   jobId: string;
@@ -138,9 +138,16 @@ export default function ReportJobsPanel() {
     // Poll every 30s to pick up new jobs / refresh stale state
     pollRef.current = setInterval(fetchJobs, 30000);
 
+    // Listen for instant job creation events from AdvancedDownloadButton
+    const handleJobCreated = () => {
+      fetchJobs();
+    };
+    window.addEventListener('job-created', handleJobCreated);
+
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
       Object.values(sseRefs.current).forEach((es) => es.close());
+      window.removeEventListener('job-created', handleJobCreated);
     };
   }, [fetchJobs]);
 
@@ -263,9 +270,6 @@ export default function ReportJobsPanel() {
                       {job.startDate} → {job.endDate}
                     </span>
                   </div>
-                  <span className="text-[10px] text-gray-400">
-                    {formatRelative(job.createdAt)}
-                  </span>
                 </div>
 
                 {/* Sheets */}
@@ -360,19 +364,4 @@ function phaseLabel(phase: string): string {
   return labels[phase] || phase;
 }
 
-function formatRelative(dateStr: string): string {
-  try {
-    const date = new Date(dateStr);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffMin = Math.floor(diffMs / 60000);
-    if (diffMin < 1) return 'just now';
-    if (diffMin < 60) return `${diffMin}m ago`;
-    const diffHr = Math.floor(diffMin / 60);
-    if (diffHr < 24) return `${diffHr}h ago`;
-    const diffDay = Math.floor(diffHr / 24);
-    return `${diffDay}d ago`;
-  } catch {
-    return '';
-  }
-}
+

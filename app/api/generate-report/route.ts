@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { generateReportToGridFS } from '@/lib/gridfsReportGenerator';
-import { buildDownloadUrl } from '@/lib/gridfs';
+import { generateReportToGridFS } from '@/lib/reporting';
+import { buildDownloadUrl } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300; // 5 minutes max execution time

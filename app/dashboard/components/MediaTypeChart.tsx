@@ -27,6 +27,19 @@ function MediaTypeChart({ data, loading }: MediaTypeChartProps) {
     );
   }
 
+  if (!data || data.length === 0) {
+    return (
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+        <h3 className="font-semibold text-lg text-gray-700 mb-4">Media Type Breakdown</h3>
+        <div className="h-80 flex flex-col items-center justify-center text-gray-400">
+          <svg className="w-12 h-12 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10.5 6a7.5 7.5 0 107.5 7.5h-7.5V6z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13.5 10.5H21A7.5 7.5 0 0013.5 3v7.5z" /></svg>
+          <p className="text-sm font-medium">No data available</p>
+          <p className="text-xs mt-1">Try adjusting your date range or filters</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
       <h3 className="font-semibold text-lg text-gray-700 mb-4">Media Type Breakdown</h3>
