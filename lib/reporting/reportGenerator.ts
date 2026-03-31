@@ -85,8 +85,9 @@ export async function generateReportToGridFS(
       selectedSheets.map(async (sheetType) => {
         const queryConfig = STREAMING_QUERIES[sheetType]?.(startDate, endDate);
         if (!queryConfig) return { sheet: sheetType, count: 0 };
-        // Wrap the streaming query in a COUNT(*) to get estimate
-        const countSql = `SELECT COUNT(*) AS cnt FROM (${queryConfig.text}) AS __est`;
+        // Strip ORDER BY — SQL Server disallows it in derived tables
+        const textWithoutOrder = queryConfig.text.replace(/ORDER\s+BY\s+[\s\S]+$/i, '');
+        const countSql = `SELECT COUNT(*) AS cnt FROM (${textWithoutOrder}) AS __est`;
         const rows = await query<{ cnt: number }>(countSql, queryConfig.params, { timeout: 30000 }).catch(() => [{ cnt: 0 }]);
         return { sheet: sheetType, count: rows[0]?.cnt ?? 0 };
       }),
