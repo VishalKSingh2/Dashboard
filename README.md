@@ -53,6 +53,13 @@ MONGODB_DB_NAME=report_dashboard
 
 # App
 NEXT_PUBLIC_BASE_URL=http://localhost:3000
+
+# Keycloak / NextAuth
+KEYCLOAK_CLIENT_ID=
+KEYCLOAK_CLIENT_SECRET= 
+KEYCLOAK_ISSUER=
+NEXTAUTH_SECRET=
+NEXTAUTH_URL=
 ```
 
 ### Install & Run
